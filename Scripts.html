@@ -14,13 +14,16 @@
     };
 
     let root;
+    let workspaceNode;
     let summaryLaneNode;
     let listHeaderNoteNode;
     let filterButtonsNode;
     let searchInputNode;
     let locationFilterNode;
+    let listStageNode;
     let tableScrollNode;
     let detailPanelNode;
+    let detailStageNode;
     let detailHeaderTitleNode;
     let detailHeaderTagsNode;
     let detailCloseButtonNode;
@@ -36,6 +39,8 @@
       renderLocationOptions();
       renderAll();
       bindEvents();
+      window.addEventListener("resize", syncDesktopStageWidths);
+      new ResizeObserver(syncDesktopStageWidths).observe(workspaceNode);
     }
 
     function buildShell() {
@@ -57,41 +62,45 @@
 
           <div class="mini-v2-workspace">
             <section class="v2-card mini-v2-table-card">
-              <div class="v2-card-header mini-v2-list-header">
-                <span>Browse Minis</span>
-                <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note"></span>
-              </div>
-              <div class="v2-card-body mini-v2-table-body">
-                <div class="mini-v2-filter-row">
-                  <div id="miniV2FilterButtons" class="mini-v2-list-filters" role="group" aria-label="Mini list filters"></div>
-                  <div class="mini-v2-search-row">
-                    <div class="mini-v2-field">
-                      <input id="miniV2SearchInput" type="search" placeholder="Search by name, sticker, or location...">
-                    </div>
-                    <div class="mini-v2-field">
-                      <select id="miniV2LocationFilter"></select>
-                    </div>
-                    <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear Filters</button>
-                  </div>
+              <div id="miniV2ListStage" class="mini-v2-list-stage">
+                <div class="v2-card-header mini-v2-list-header">
+                  <span>Browse Minis</span>
+                  <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note"></span>
                 </div>
-                <div id="miniV2TableScroll" class="mini-v2-table-scroll"></div>
+                <div class="v2-card-body mini-v2-table-body">
+                  <div class="mini-v2-filter-row">
+                    <div id="miniV2FilterButtons" class="mini-v2-list-filters" role="group" aria-label="Mini list filters"></div>
+                    <div class="mini-v2-search-row">
+                      <div class="mini-v2-field">
+                        <input id="miniV2SearchInput" type="search" placeholder="Search by name, sticker, or location...">
+                      </div>
+                      <div class="mini-v2-field">
+                        <select id="miniV2LocationFilter"></select>
+                      </div>
+                      <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear Filters</button>
+                    </div>
+                  </div>
+                  <div id="miniV2TableScroll" class="mini-v2-table-scroll"></div>
+                </div>
               </div>
             </section>
 
             <aside id="miniV2DetailPanel" class="v2-card mini-v2-detail-card">
-              <div class="v2-card-header mini-v2-detail-header">
-                <div class="mini-v2-detail-header-main">
-                  <span id="miniV2DetailHeaderTitle">Mini Details</span>
-                  <div id="miniV2DetailHeaderTags" class="mini-v2-detail-tag-row"></div>
+              <div id="miniV2DetailStage" class="mini-v2-detail-stage">
+                <div class="v2-card-header mini-v2-detail-header">
+                  <div class="mini-v2-detail-header-main">
+                    <span id="miniV2DetailHeaderTitle">Mini Details</span>
+                    <div id="miniV2DetailHeaderTags" class="mini-v2-detail-tag-row"></div>
+                  </div>
+                  <div class="mini-v2-detail-header-actions">
+                    <button id="miniV2DetailCloseButton" class="button mini-v2-detail-close" type="button" data-action="close-detail">Close</button>
+                  </div>
                 </div>
-                <div class="mini-v2-detail-header-actions">
-                  <button id="miniV2DetailCloseButton" class="button mini-v2-detail-close" type="button" data-action="close-detail">Close</button>
-                </div>
-              </div>
-              <div class="v2-card-body">
-                <div id="miniV2DetailScroll" class="mini-v2-detail-scroll">
-                  <div id="miniV2DetailEmpty" class="mini-v2-detail-empty">Select a miniature to view its details and move individual copies.</div>
-                  <div id="miniV2DetailContent" hidden></div>
+                <div class="v2-card-body">
+                  <div id="miniV2DetailScroll" class="mini-v2-detail-scroll">
+                    <div id="miniV2DetailEmpty" class="mini-v2-detail-empty">Select a miniature to view its details and move individual copies.</div>
+                    <div id="miniV2DetailContent" hidden></div>
+                  </div>
                 </div>
               </div>
             </aside>
@@ -102,13 +111,16 @@
 
     function bindNodes() {
       root = document.getElementById("miniV2Root");
+      workspaceNode = root.querySelector(".mini-v2-workspace");
       summaryLaneNode = document.getElementById("miniV2SummaryLane");
       listHeaderNoteNode = document.getElementById("miniV2ListHeaderNote");
       filterButtonsNode = document.getElementById("miniV2FilterButtons");
       searchInputNode = document.getElementById("miniV2SearchInput");
       locationFilterNode = document.getElementById("miniV2LocationFilter");
+      listStageNode = document.getElementById("miniV2ListStage");
       tableScrollNode = document.getElementById("miniV2TableScroll");
       detailPanelNode = document.getElementById("miniV2DetailPanel");
+      detailStageNode = document.getElementById("miniV2DetailStage");
       detailHeaderTitleNode = document.getElementById("miniV2DetailHeaderTitle");
       detailHeaderTagsNode = document.getElementById("miniV2DetailHeaderTags");
       detailCloseButtonNode = document.getElementById("miniV2DetailCloseButton");
@@ -162,6 +174,7 @@
       renderLocationOptions();
       renderTable();
       renderDetail();
+      requestAnimationFrame(syncDesktopStageWidths);
     }
 
     function renderAllPreservingScroll(existingState) {
@@ -241,17 +254,9 @@
         const status = getStatusKey(group);
         return `
           <tr class="mini-v2-row ${group.rootId === state.selectedRootId ? "is-selected" : ""}" data-group-id="${escapeHtml(group.rootId)}" tabindex="0">
-            <td><div class="mini-v2-name">${escapeHtml(group.name)}</div></td>
-            <td>
-              <div class="mini-v2-status-cell">
-                ${renderStatusBadge(group)}
-                ${group.needsStickers ? '<span class="mini-v2-badge is-warn">Needs Stickers</span>' : ""}
-              </div>
-            </td>
-            <td>${escapeHtml(group.home)}</td>
             <td><span class="mini-v2-count ${statusClass(status)}">${group.available}</span></td>
-            <td>${group.total}</td>
-            <td>${group.checkedOut}</td>
+            <td><div class="mini-v2-name">${escapeHtml(group.name)}</div></td>
+            <td>${escapeHtml(group.home)}</td>
             <td>${escapeHtml(group.size)}</td>
             <td>${escapeHtml(group.creatureType)}</td>
           </tr>
@@ -260,15 +265,12 @@
 
       tableScrollNode.innerHTML = `
         <div class="mini-v2-list-wrap">
-          <table class="mini-v2-table" aria-label="Miniature inventory">
+          <table class="mini-v2-table mini-v2-browse-table" aria-label="Miniature inventory">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Home</th>
                 <th>Avail</th>
-                <th>Total</th>
-                <th>Out</th>
+                <th>Name</th>
+                <th>Home</th>
                 <th>Size</th>
                 <th>Type</th>
               </tr>
@@ -582,6 +584,18 @@
 
     function getPrimaryScrollHost() {
       return document.scrollingElement || document.documentElement || document.body;
+    }
+
+    function syncDesktopStageWidths() {
+      if (!desktopMq.matches) {
+        root.style.removeProperty("--mini-v2-list-lock-width");
+        return;
+      }
+
+      const workspaceWidth = workspaceNode ? workspaceNode.getBoundingClientRect().width : 0;
+      if (workspaceWidth > 0) {
+        root.style.setProperty("--mini-v2-list-lock-width", `${Math.round(workspaceWidth)}px`);
+      }
     }
 
     function getFilteredGroups() {
