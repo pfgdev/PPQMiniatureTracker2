@@ -1,0 +1,178 @@
+function onEdit(e) {
+  var sheet = e.source.getActiveSheet();
+  var range = e.range;
+
+  if (!range) return;
+
+  if (sheet.getName() === "Check Out Minis" && range.getColumn() === 9) {
+    var rowNumber = range.getRow();
+    var value = range.getValue();
+
+    Logger.log("Dropdown changed: Row = " + rowNumber + ", Value = " + value);
+
+    var locationRanges = ["B24:E24", "B27:E27", "B30:E30"];
+    locationRanges.forEach(cellRange => sheet.getRange(cellRange).clearContent());
+
+    if (value === "Open Details") {
+      var dataRange = sheet.getRange("I2:I");
+      var values = dataRange.getValues();
+      for (var i = 0; i < values.length; i++) {
+        if (i + 2 !== rowNumber) {
+          values[i][0] = "";
+        }
+      }
+      dataRange.setValues(values);
+      populateMiniLocations(rowNumber);
+    } else if (value === "Clear Details") {
+      var clearRange = sheet.getRange("I2:I");
+      var clearValues = clearRange.getValues();
+      for (var j = 0; j < clearValues.length; j++) {
+        if (clearValues[j][0] === "Clear Details") {
+          clearValues[j][0] = "";
+        }
+      }
+      clearRange.setValues(clearValues);
+    }
+  }
+}
+
+function populateMiniLocations(rowNumber) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Check Out Minis");
+  var masterSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Master Inventory");
+
+  if (!sheet || !masterSheet) return;
+
+  var rootID = sheet.getRange(rowNumber, 7).getValue();
+  if (!rootID) return;
+
+  Logger.log("Populating Mini Locations for Root ID: " + rootID);
+
+  var masterData = masterSheet.getDataRange().getValues();
+  var miniIDs = [];
+  var locations = [];
+
+  for (var i = 1; i < masterData.length; i++) {
+    if (masterData[i][2] === rootID) {
+      miniIDs.push(masterData[i][1]);
+      locations.push(masterData[i][6]);
+    }
+  }
+
+  if (miniIDs.length === 0) {
+    Logger.log("No matching Mini IDs found.");
+    return;
+  }
+
+  Logger.log("Found " + miniIDs.length + " Miniatures: " + miniIDs);
+
+  var locationCells = ["B24:E24", "B27:E27", "B30:E30"];
+  var index = 0;
+
+  for (var j = 0; j < locationCells.length && index < miniIDs.length; j++) {
+    var range = sheet.getRange(locationCells[j]);
+    var rowValues = [];
+    for (var k = 0; k < range.getNumColumns(); k++) {
+      if (index < miniIDs.length) {
+        rowValues.push([locations[index] || ""]);
+        index++;
+      } else {
+        rowValues.push([""]);
+      }
+    }
+    range.setValues([rowValues.map(v => v[0])]);
+  }
+}
+
+function resetMiniLocations() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Check Out Minis");
+  var rootID = sheet.getRange("C4").getValue();
+
+  if (!rootID || typeof rootID !== "string") return;
+
+  Logger.log("Finding row number for Root ID: " + rootID);
+
+  var dataRange = sheet.getRange("G2:G").getValues();
+  var rowNumber = null;
+
+  for (var i = 0; i < dataRange.length; i++) {
+    if (dataRange[i][0] === rootID) {
+      rowNumber = i + 2;
+      break;
+    }
+  }
+
+  if (!rowNumber) {
+    Logger.log("Root ID not found in Check Out Minis.");
+    return;
+  }
+
+  Logger.log("Resetting Mini Locations for row: " + rowNumber);
+  populateMiniLocations(rowNumber);
+}
+
+function submitMiniLocations() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Check Out Minis");
+  var masterSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Master Inventory");
+
+  if (!sheet || !masterSheet) return;
+
+  var miniIDCells = [["AI2", "B24"], ["AI3", "C24"], ["AI4", "D24"], ["AI5", "E24"],
+    ["AI6", "B27"], ["AI7", "C27"], ["AI8", "D27"], ["AI9", "E27"],
+    ["AI10", "B30"], ["AI11", "C30"], ["AI12", "D30"], ["AI13", "E30"]];
+
+  var masterData = masterSheet.getDataRange().getValues();
+
+  miniIDCells.forEach(pair => {
+    var miniID = sheet.getRange(pair[0]).getValue();
+    var newLocation = sheet.getRange(pair[1]).getValue();
+
+    if (miniID && newLocation) {
+      for (var i = 1; i < masterData.length; i++) {
+        if (masterData[i][1] === miniID) {
+          var homeLocation = masterData[i][14];
+
+          if (newLocation === "<Return Home>") {
+            newLocation = homeLocation;
+          }
+
+          masterSheet.getRange(i + 1, 7).setValue(newLocation);
+
+          if (sheet.getRange(pair[1]).getValue() === "<Return Home>") {
+            sheet.getRange(pair[1]).setValue(newLocation);
+          }
+
+          Logger.log("Updated " + miniID + " location to " + newLocation);
+          break;
+        }
+      }
+    }
+  });
+}
+
+function setAllHome() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Check Out Minis");
+  var masterSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Master Inventory");
+
+  if (!sheet || !masterSheet) return;
+
+  var miniIDCells = [["AI2", "B24"], ["AI3", "C24"], ["AI4", "D24"], ["AI5", "E24"],
+    ["AI6", "B27"], ["AI7", "C27"], ["AI8", "D27"], ["AI9", "E27"],
+    ["AI10", "B30"], ["AI11", "C30"], ["AI12", "D30"], ["AI13", "E30"]];
+
+  var masterData = masterSheet.getDataRange().getValues();
+
+  miniIDCells.forEach(pair => {
+    var miniID = sheet.getRange(pair[0]).getValue();
+
+    if (miniID) {
+      for (var i = 1; i < masterData.length; i++) {
+        if (masterData[i][1] === miniID) {
+          var homeLocation = masterData[i][15];
+          sheet.getRange(pair[1]).setValue(homeLocation);
+          Logger.log("Set " + miniID + " to home (" + homeLocation + ") in the sheet (NOT submitted).");
+          break;
+        }
+      }
+    }
+  });
+}

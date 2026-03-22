@@ -1,0 +1,254 @@
+function syncMasterInventory() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var entrySheet = sheet.getSheetByName("Entry Form");
+  var inventorySheet = sheet.getSheetByName("Master Inventory");
+
+  if (!entrySheet || !inventorySheet) {
+    Logger.log("Error: One or more sheets are missing.");
+    return;
+  }
+
+  var entryForm = entrySheet.getDataRange().getValues();
+  var inventoryData = inventorySheet.getDataRange().getValues();
+
+  var extractedIDs = inventoryData
+    .slice(1)
+    .map(row => parseInt(row[2]?.split("-")[0], 10))
+    .filter(num => !isNaN(num) && num > 0);
+  var maxExistingID = extractedIDs.length > 0 ? Math.max(...extractedIDs) : 0;
+  var nextID = maxExistingID + 1;
+
+  var updatedEntries = [];
+  var entryIDsRange = [];
+  var inventoryRootCounts = {};
+  var newInventoryEntries = [];
+
+  Logger.log("Step 1: Assigning Root IDs using Max Existing ID (" + maxExistingID + ")...");
+
+  for (var i = 5; i < entryForm.length; i++) {
+    var row = entryForm[i];
+    var rootID = row[1];
+    var name = row[2];
+    var homeLocation = row[12];
+
+    if (name && (!rootID || typeof rootID !== "string" || rootID.startsWith("-"))) {
+      rootID = generateRootID(name, nextID);
+      row[1] = rootID;
+      updatedEntries.push([rootID]);
+      entryIDsRange.push(i + 1);
+      nextID++;
+    }
+  }
+
+  if (updatedEntries.length > 0) {
+    entrySheet.getRange(entryIDsRange[0], 2, updatedEntries.length, 1).setValues(updatedEntries);
+    Logger.log("Step 1 Complete: Root IDs assigned.");
+  } else {
+    Logger.log("Step 1 Complete: No missing Root IDs found.");
+  }
+
+  Logger.log("Step 2: Checking and Adding Missing Entries to Master Inventory from Entry Form...");
+
+  for (var j = 1; j < inventoryData.length; j++) {
+    var inventoryRootID = inventoryData[j][2];
+    var miniNum = parseInt(inventoryData[j][3], 10) || 0;
+    if (inventoryRootID && miniNum) {
+      if (!inventoryRootCounts[inventoryRootID]) {
+        inventoryRootCounts[inventoryRootID] = new Set();
+      }
+      inventoryRootCounts[inventoryRootID].add(miniNum);
+    }
+  }
+  Logger.log("Existing Inventory Counts:", JSON.stringify(inventoryRootCounts));
+
+  for (var k = 5; k < entryForm.length; k++) {
+    var entryRow = entryForm[k];
+    var entryRootID = entryRow[1];
+    var entryName = entryRow[2];
+    var quantity = parseInt(entryRow[3], 10) || 0;
+    var entryHomeLocation = entryRow[12];
+
+    Logger.log("Checking Row " + k + ": RootID=" + entryRootID + ", Name=" + entryName + ", Quantity=" + quantity);
+
+    var existingMinis = inventoryRootCounts[entryRootID] || new Set();
+    var existingCount = existingMinis.size;
+
+    if (entryName && quantity > existingCount) {
+      var additionalEntries = quantity - existingCount;
+      Logger.log("Adding " + additionalEntries + " new entries for RootID: " + entryRootID);
+      for (var q = existingCount + 1; q <= quantity; q++) {
+        if (!existingMinis.has(q)) {
+          var miniNumString = String(q).padStart(2, "0");
+          var uniqueID = entryRootID + "-" + miniNumString;
+          newInventoryEntries.push([uniqueID, entryRootID, miniNumString, "", "", entryHomeLocation]);
+        }
+      }
+    }
+  }
+
+  if (newInventoryEntries.length > 0) {
+    var lastUsedRow = 1;
+    for (var m = inventoryData.length - 1; m >= 1; m--) {
+      if (inventoryData[m][2]) {
+        lastUsedRow = m + 1;
+        break;
+      }
+    }
+    var targetRow = lastUsedRow + 1;
+    inventorySheet.getRange(targetRow, 2, newInventoryEntries.length, 6).setValues(newInventoryEntries);
+    Logger.log("Step 2 Complete: Added " + newInventoryEntries.length + " new entries from Entry Form.");
+  } else {
+    Logger.log("Step 2 Complete: No new entries needed.");
+  }
+
+  removeExcessMiniatures();
+  updateCheckedOutLog();
+}
+
+function generateRootID(name, uniqueNum) {
+  if (!name) return "";
+  var abbrev = name
+    .split(" ")
+    .slice(0, 3)
+    .map(word => word.substring(0, 3))
+    .join("")
+    .toUpperCase();
+  return String(uniqueNum).padStart(3, "0") + "-" + abbrev;
+}
+
+function updateCheckedOutLog() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var masterSheet = sheet.getSheetByName("Master Inventory");
+  var checkoutSheet = sheet.getSheetByName("Check Out Minis");
+
+  if (!masterSheet || !checkoutSheet) {
+    Logger.log("Error: One or more sheets are missing.");
+    return;
+  }
+
+  var masterData = masterSheet.getDataRange().getValues();
+  var rootIDColumn = 2;
+  var uniqueRootIDs = [...new Set(masterData.map(row => row[rootIDColumn]).filter(id => id))];
+
+  checkoutSheet.getRange("g2:g").clearContent();
+
+  if (uniqueRootIDs.length > 0) {
+    checkoutSheet.getRange(1, 7, uniqueRootIDs.length, 1).setValues(uniqueRootIDs.map(id => [id]));
+  }
+
+  Logger.log("Updated Checked Out Log with " + uniqueRootIDs.length + " unique Root IDs.");
+}
+
+function removeExcessMiniatures() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var entrySheet = sheet.getSheetByName("Entry Form");
+  var inventorySheet = sheet.getSheetByName("Master Inventory");
+  var deletedLogSheet = sheet.getSheetByName("Deleted Minis");
+
+  if (!entrySheet || !inventorySheet) {
+    Logger.log("Error: One or more sheets are missing.");
+    return;
+  }
+
+  if (!deletedLogSheet) {
+    deletedLogSheet = sheet.insertSheet("Deleted Minis");
+    deletedLogSheet.appendRow(["Deleted ID", "Root ID", "Mini Number", "Name", "Deleted At", "Previous Location"]);
+  }
+
+  var entryData = entrySheet.getDataRange().getValues();
+  var inventoryData = inventorySheet.getDataRange().getValues();
+
+  for (var i = 5; i < entryData.length; i++) {
+    var row = entryData[i];
+    var rootID = row[1];
+    var quantity = parseInt(row[3], 10) || 0;
+
+    if (!rootID) continue;
+
+    var existingMinis = [];
+    for (var j = 1; j < inventoryData.length; j++) {
+      if (inventoryData[j][2] === rootID) {
+        existingMinis.push(j + 1);
+      }
+    }
+
+    var existingCount = existingMinis.length;
+
+    if (existingCount > quantity) {
+      var excessToRemove = existingCount - quantity;
+      Logger.log("Removing " + excessToRemove + " extra minis for " + rootID);
+
+      for (var n = 0; n < excessToRemove; n++) {
+        var rowToRemove = existingMinis.pop();
+        var deletedMini = inventoryData[rowToRemove - 1];
+
+        var deletedID = deletedMini[1];
+        var miniNumber = deletedMini[3];
+        var name = deletedMini[7];
+        var prevLocation = deletedMini[5];
+
+        deletedLogSheet.appendRow([deletedID, rootID, miniNumber, name, new Date(), prevLocation]);
+        inventorySheet.deleteRow(rowToRemove);
+      }
+    }
+  }
+  Logger.log("Excess miniatures removed successfully.");
+}
+
+function applyStickersToMasterInventory() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var stickerSheet = ss.getSheetByName("Sticker Assignment");
+  var inventorySheet = ss.getSheetByName("Master Inventory");
+
+  if (!stickerSheet || !inventorySheet) return;
+
+  var stickerData = stickerSheet.getRange("B6:D").getValues();
+  var inventoryData = inventorySheet.getDataRange().getValues();
+
+  var idToSticker = {};
+  var rowsToClear = [];
+
+  for (let i = 0; i < stickerData.length; i++) {
+    var id = stickerData[i][0];
+    var sticker = stickerData[i][2];
+    if (id && sticker) {
+      idToSticker[id] = sticker;
+      rowsToClear.push(i + 6);
+    }
+  }
+
+  for (let j = 1; j < inventoryData.length; j++) {
+    var miniID = inventoryData[j][1];
+    if (idToSticker[miniID]) {
+      inventorySheet.getRange(j + 1, 5).setValue(idToSticker[miniID]);
+    }
+  }
+
+  rowsToClear.forEach(rowNumber => {
+    stickerSheet.getRange(rowNumber, 4).clearContent();
+  });
+
+  Logger.log("Stickers applied and cleared from assignment column.");
+}
+
+function removeStickers() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const stickerSheet = ss.getSheetByName("Sticker Assignment");
+  const inventorySheet = ss.getSheetByName("Master Inventory");
+
+  const stickerColumn = stickerSheet.getRange("J6:J").getValues().flat().filter(Boolean);
+  const inventoryStickers = inventorySheet.getRange("E2:E").getValues();
+
+  if (stickerColumn.length === 0) return;
+
+  stickerColumn.forEach(sticker => {
+    for (let i = 0; i < inventoryStickers.length; i++) {
+      if (inventoryStickers[i][0] === sticker) {
+        inventorySheet.getRange(i + 2, 5).clearContent();
+      }
+    }
+  });
+
+  stickerSheet.getRange("J6:J").clearContent();
+  Logger.log("Stickers removed and J6:J cleared.");
+}

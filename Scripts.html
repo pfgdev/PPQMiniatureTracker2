@@ -1,0 +1,724 @@
+<script>
+  (function () {
+    const desktopMq = window.matchMedia("(min-width: 980px)");
+
+    const state = {
+      groups: INITIAL_STATE.groups.map(enrichGroup),
+      locations: INITIAL_STATE.locations.slice(),
+      search: "",
+      availabilityFilter: "all",
+      locationFilter: "all",
+      selectedRootId: "",
+      draftLocations: {},
+      detailPointerDownInside: false
+    };
+
+    let root;
+    let summaryLaneNode;
+    let listHeaderNoteNode;
+    let filterButtonsNode;
+    let searchInputNode;
+    let locationFilterNode;
+    let tableScrollNode;
+    let detailPanelNode;
+    let detailHeaderTitleNode;
+    let detailHeaderTagsNode;
+    let detailCloseButtonNode;
+    let detailScrollNode;
+    let detailEmptyNode;
+    let detailContentNode;
+
+    initMiniV2();
+
+    function initMiniV2() {
+      buildShell();
+      bindNodes();
+      renderLocationOptions();
+      renderAll();
+      bindEvents();
+    }
+
+    function buildShell() {
+      document.getElementById("app").innerHTML = `
+        <div id="miniV2Root" class="mini-v2">
+          <section class="v2-card mini-v2-top-card">
+            <div class="v2-card-header">Miniature Tracker</div>
+            <div class="v2-card-body">
+              <div class="mini-v2-top-layout">
+                <div class="mini-v2-title-block">
+                  <div class="mini-v2-kicker">Inventory Browser</div>
+                  <h1 class="mini-v2-hero">Browse, pull details, and move copies without leaving the main list.</h1>
+                  <p class="mini-v2-subtitle">This pass is intentionally built on the loot chest shell. The job right now is to make the workspace feel familiar and stable before we wire in real Sheets logic.</p>
+                </div>
+                <div id="miniV2SummaryLane" class="mini-v2-summary-lane"></div>
+              </div>
+            </div>
+          </section>
+
+          <div class="mini-v2-workspace">
+            <section class="v2-card mini-v2-table-card">
+              <div class="v2-card-header mini-v2-list-header">
+                <span>Browse Minis</span>
+                <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note"></span>
+              </div>
+              <div class="v2-card-body mini-v2-table-body">
+                <div class="mini-v2-filter-row">
+                  <div id="miniV2FilterButtons" class="mini-v2-list-filters" role="group" aria-label="Mini list filters"></div>
+                  <div class="mini-v2-search-row">
+                    <div class="mini-v2-field">
+                      <input id="miniV2SearchInput" type="search" placeholder="Search by name, sticker, or location...">
+                    </div>
+                    <div class="mini-v2-field">
+                      <select id="miniV2LocationFilter"></select>
+                    </div>
+                    <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear Filters</button>
+                  </div>
+                </div>
+                <div id="miniV2TableScroll" class="mini-v2-table-scroll"></div>
+              </div>
+            </section>
+
+            <aside id="miniV2DetailPanel" class="v2-card mini-v2-detail-card">
+              <div class="v2-card-header mini-v2-detail-header">
+                <div class="mini-v2-detail-header-main">
+                  <span id="miniV2DetailHeaderTitle">Mini Details</span>
+                  <div id="miniV2DetailHeaderTags" class="mini-v2-detail-tag-row"></div>
+                </div>
+                <div class="mini-v2-detail-header-actions">
+                  <button id="miniV2DetailCloseButton" class="button mini-v2-detail-close" type="button" data-action="close-detail">Close</button>
+                </div>
+              </div>
+              <div class="v2-card-body">
+                <div id="miniV2DetailScroll" class="mini-v2-detail-scroll">
+                  <div id="miniV2DetailEmpty" class="mini-v2-detail-empty">Select a miniature to view its details and move individual copies.</div>
+                  <div id="miniV2DetailContent" hidden></div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      `;
+    }
+
+    function bindNodes() {
+      root = document.getElementById("miniV2Root");
+      summaryLaneNode = document.getElementById("miniV2SummaryLane");
+      listHeaderNoteNode = document.getElementById("miniV2ListHeaderNote");
+      filterButtonsNode = document.getElementById("miniV2FilterButtons");
+      searchInputNode = document.getElementById("miniV2SearchInput");
+      locationFilterNode = document.getElementById("miniV2LocationFilter");
+      tableScrollNode = document.getElementById("miniV2TableScroll");
+      detailPanelNode = document.getElementById("miniV2DetailPanel");
+      detailHeaderTitleNode = document.getElementById("miniV2DetailHeaderTitle");
+      detailHeaderTagsNode = document.getElementById("miniV2DetailHeaderTags");
+      detailCloseButtonNode = document.getElementById("miniV2DetailCloseButton");
+      detailScrollNode = document.getElementById("miniV2DetailScroll");
+      detailEmptyNode = document.getElementById("miniV2DetailEmpty");
+      detailContentNode = document.getElementById("miniV2DetailContent");
+    }
+
+    function bindEvents() {
+      root.addEventListener("click", handleRootClick);
+      root.addEventListener("input", handleRootInput);
+      root.addEventListener("change", handleRootChange);
+      root.addEventListener("keydown", handleRootKeydown);
+      document.addEventListener("click", handleDocumentClick);
+      document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+    }
+
+    function enrichGroup(group) {
+      const copies = group.copies.map(copy => ({ ...copy }));
+      const available = copies.filter(copy => copy.currentLocation === copy.home).length;
+      const total = copies.length;
+      const checkedOut = total - available;
+      const needsStickers = copies.some(copy => !copy.sticker);
+      const searchText = [
+        group.name,
+        group.rootId,
+        group.home,
+        group.size,
+        group.creatureType,
+        group.sex,
+        group.race,
+        group.role,
+        group.set,
+        group.setNumber,
+        group.notes
+      ]
+        .concat(copies.map(copy => [copy.id, copy.sticker, copy.currentLocation].join(" ")))
+        .join(" ")
+        .toLowerCase();
+
+      return { ...group, copies, available, total, checkedOut, needsStickers, searchText };
+    }
+
+    function renderAll() {
+      ensureSelectionVisibility();
+      const selectedGroup = getSelectedGroup();
+      root.classList.toggle("mini-v2-has-detail", !!selectedGroup);
+      renderSummaryLane();
+      renderListHeader();
+      renderFilterButtons();
+      renderLocationOptions();
+      renderTable();
+      renderDetail();
+    }
+
+    function renderAllPreservingScroll(existingState) {
+      const scrollState = existingState || captureScrollState();
+      renderAll();
+      restoreScrollState(scrollState);
+      return scrollState;
+    }
+
+    function renderSummaryLane() {
+      const filtered = getFilteredGroups();
+      const stickerWork = state.groups.filter(group => group.needsStickers).length;
+
+      summaryLaneNode.innerHTML = `
+        <span class="mini-v2-chip is-primary">Mock Data</span>
+        <span class="mini-v2-chip">Groups ${state.groups.length}</span>
+        <span class="mini-v2-chip">Visible ${filtered.length}</span>
+        <span class="mini-v2-chip ${stickerWork ? "is-warn" : ""}">Sticker Work ${stickerWork}</span>
+      `;
+    }
+
+    function renderListHeader() {
+      const filtered = getFilteredGroups();
+      listHeaderNoteNode.textContent = filtered.length === 1
+        ? "1 miniature shown"
+        : `${filtered.length} miniatures shown`;
+    }
+
+    function renderFilterButtons() {
+      const counts = getAvailabilityCounts();
+      const filters = [
+        { key: "all", label: `All (${state.groups.length})` },
+        { key: "ready", label: `Ready (${counts.ready})` },
+        { key: "partial", label: `Partial (${counts.partial})` },
+        { key: "checkedOut", label: `Checked Out (${counts.checkedOut})` },
+        { key: "needsStickers", label: `Needs Stickers (${counts.needsStickers})` }
+      ];
+
+      filterButtonsNode.innerHTML = filters.map(filter => `
+        <button
+          class="mini-v2-list-filter-btn ${state.availabilityFilter === filter.key ? "is-active" : ""}"
+          type="button"
+          data-action="set-filter"
+          data-filter="${filter.key}"
+        >
+          <span class="mini-v2-list-filter-label">${escapeHtml(filter.label)}</span>
+        </button>
+      `).join("");
+    }
+
+    function renderLocationOptions() {
+      const options = [`<option value="all">All locations</option>`]
+        .concat(state.locations.map(location => `<option value="${escapeHtml(location)}">${escapeHtml(location)}</option>`))
+        .join("");
+
+      if (locationFilterNode.innerHTML !== options) {
+        locationFilterNode.innerHTML = options;
+      }
+
+      locationFilterNode.value = state.locationFilter;
+      searchInputNode.value = state.search;
+    }
+
+    function renderTable() {
+      const groups = getFilteredGroups();
+
+      if (!groups.length) {
+        tableScrollNode.innerHTML = `
+          <div class="mini-v2-list-wrap">
+            <div class="mini-v2-empty">No miniatures match those filters.</div>
+          </div>
+        `;
+        return;
+      }
+
+      const rows = groups.map(group => {
+        const status = getStatusKey(group);
+        return `
+          <tr class="mini-v2-row ${group.rootId === state.selectedRootId ? "is-selected" : ""}" data-group-id="${escapeHtml(group.rootId)}" tabindex="0">
+            <td><div class="mini-v2-name">${escapeHtml(group.name)}</div></td>
+            <td>
+              <div class="mini-v2-status-cell">
+                ${renderStatusBadge(group)}
+                ${group.needsStickers ? '<span class="mini-v2-badge is-warn">Needs Stickers</span>' : ""}
+              </div>
+            </td>
+            <td>${escapeHtml(group.home)}</td>
+            <td><span class="mini-v2-count ${statusClass(status)}">${group.available}</span></td>
+            <td>${group.total}</td>
+            <td>${group.checkedOut}</td>
+            <td>${escapeHtml(group.size)}</td>
+            <td>${escapeHtml(group.creatureType)}</td>
+          </tr>
+        `;
+      }).join("");
+
+      tableScrollNode.innerHTML = `
+        <div class="mini-v2-list-wrap">
+          <table class="mini-v2-table" aria-label="Miniature inventory">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Home</th>
+                <th>Avail</th>
+                <th>Total</th>
+                <th>Out</th>
+                <th>Size</th>
+                <th>Type</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderDetail() {
+      const group = getSelectedGroup();
+
+      if (!group) {
+        detailHeaderTitleNode.textContent = "Mini Details";
+        detailHeaderTagsNode.innerHTML = "";
+        detailEmptyNode.hidden = false;
+        detailContentNode.hidden = true;
+        detailCloseButtonNode.disabled = true;
+        return;
+      }
+
+      const dirtyCount = group.copies.filter(isDirty).length;
+      detailHeaderTitleNode.textContent = group.name;
+      detailHeaderTagsNode.innerHTML = [
+        renderDetailTag(getStatusLabel(group), statusClass(getStatusKey(group))),
+        dirtyCount ? renderDetailTag(`Unsaved ${dirtyCount}`, "is-warn") : "",
+        group.needsStickers ? renderDetailTag("Sticker Work", "is-warn") : ""
+      ].join("");
+      detailCloseButtonNode.disabled = false;
+      detailEmptyNode.hidden = true;
+      detailContentNode.hidden = false;
+
+      detailContentNode.innerHTML = `
+        <div class="mini-v2-detail-panel">
+          <section>
+            <div class="mini-v2-detail-name">${escapeHtml(group.name)}</div>
+            <p class="mini-v2-detail-copy">Click a different row to swap the panel in place. Click the same row or blank background space to close it.</p>
+          </section>
+
+          <section class="mini-v2-stat-grid">
+            ${renderStatCard("Home", group.home)}
+            ${renderStatCard("Available", `<span class="mini-v2-count ${statusClass(getStatusKey(group))}">${group.available}</span>`)}
+            ${renderStatCard("Total", String(group.total))}
+            ${renderStatCard("Checked Out", String(group.checkedOut))}
+          </section>
+
+          <section class="mini-v2-meta-grid">
+            ${renderReadCard("Size", group.size)}
+            ${renderReadCard("Creature Type", group.creatureType)}
+            ${renderReadCard("Sex", group.sex)}
+            ${renderReadCard("Race", group.race || "n/a")}
+            ${renderReadCard("Role", group.role || "n/a")}
+            ${renderReadCard("Paint", group.paint ? "Painted" : "Unpainted")}
+            ${renderReadCard("Set", group.set || "n/a")}
+            ${renderReadCard("Set #", group.setNumber || "n/a")}
+          </section>
+
+          <section class="mini-v2-note-card">
+            <div class="mini-v2-note-label">Notes</div>
+            <div class="mini-v2-note-body">${escapeHtml(group.notes || "No notes yet.")}</div>
+          </section>
+
+          <section class="mini-v2-copy-card">
+            <div class="mini-v2-copy-header">
+              <div>
+                <div class="mini-v2-copy-title">Physical Copies</div>
+                <div class="mini-v2-copy-header-copy">Use the sticker-aware copy list below to stage location changes before saving.</div>
+              </div>
+              <div class="mini-v2-copy-actions">
+                <button class="button mini-v2-copy-btn" type="button" data-action="reset-changes">Reset Changes</button>
+                <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="set-all-home">Set All Home</button>
+                <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-changes">Save Mock Changes</button>
+              </div>
+            </div>
+            <div class="mini-v2-copy-wrap">
+              <table class="mini-v2-table mini-v2-copy-table" aria-label="Physical copies">
+                <thead>
+                  <tr>
+                    <th>Sticker</th>
+                    <th>Current Location</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>${group.copies.map(renderCopyRow).join("")}</tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      `;
+    }
+
+    function renderStatusBadge(group) {
+      const status = getStatusKey(group);
+      return `<span class="mini-v2-badge ${statusClass(status)}">${escapeHtml(getStatusLabel(group))}</span>`;
+    }
+
+    function renderDetailTag(label, className) {
+      return `<span class="mini-v2-detail-tag ${className}">${escapeHtml(label)}</span>`;
+    }
+
+    function renderStatCard(label, valueMarkup) {
+      return `
+        <div class="mini-v2-stat-card">
+          <div class="mini-v2-stat-label">${escapeHtml(label)}</div>
+          <div class="mini-v2-stat-value">${valueMarkup}</div>
+        </div>
+      `;
+    }
+
+    function renderReadCard(label, value) {
+      return `
+        <div class="mini-v2-read-card">
+          <div class="mini-v2-field-label">${escapeHtml(label)}</div>
+          <div class="mini-v2-read-value">${escapeHtml(value)}</div>
+        </div>
+      `;
+    }
+
+    function renderCopyRow(copy) {
+      const effectiveLocation = getEffectiveLocation(copy);
+      const away = effectiveLocation !== copy.home;
+      const dirty = isDirty(copy);
+      const statusMarkup = dirty
+        ? '<span class="mini-v2-copy-status is-dirty">Unsaved</span>'
+        : away
+          ? '<span class="mini-v2-copy-status is-away">Away</span>'
+          : '<span class="mini-v2-copy-status is-home">Home</span>';
+
+      return `
+        <tr class="mini-v2-copy-row ${away ? "is-away" : ""} ${dirty ? "is-dirty" : ""}">
+          <td>${escapeHtml(copy.sticker || "Needs sticker")}</td>
+          <td>
+            <select class="mini-v2-copy-select" data-copy-id="${escapeHtml(copy.id)}">
+              ${renderCopyLocationOptions(copy, effectiveLocation)}
+            </select>
+          </td>
+          <td>${statusMarkup}</td>
+        </tr>
+      `;
+    }
+
+    function renderCopyLocationOptions(copy, effectiveLocation) {
+      return [`<option value="__RETURN_HOME__"${effectiveLocation === copy.home ? " selected" : ""}>Return Home</option>`]
+        .concat(state.locations.map(location => `
+          <option value="${escapeHtml(location)}"${effectiveLocation === location ? " selected" : ""}>${escapeHtml(location)}</option>
+        `))
+        .join("");
+    }
+
+    function handleRootClick(event) {
+      const actionButton = event.target.closest("button[data-action]");
+      if (actionButton && root.contains(actionButton)) {
+        event.stopPropagation();
+        const action = actionButton.getAttribute("data-action");
+
+        if (action === "set-filter") {
+          state.availabilityFilter = actionButton.getAttribute("data-filter") || "all";
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "clear-filters") {
+          state.search = "";
+          state.availabilityFilter = "all";
+          state.locationFilter = "all";
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "close-detail") {
+          clearSelectedGroup();
+          return;
+        }
+
+        if (action === "reset-changes") {
+          resetSelectedDraftChanges();
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "set-all-home") {
+          stageSelectedCopiesHome();
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "save-changes") {
+          saveSelectedDraftChanges();
+          renderAllPreservingScroll();
+          return;
+        }
+      }
+
+      const clickedRow = event.target.closest("tr[data-group-id]");
+      if (clickedRow && root.contains(clickedRow)) {
+        event.stopPropagation();
+        const rootId = clickedRow.getAttribute("data-group-id");
+        if (!rootId) return;
+        if (rootId !== state.selectedRootId) {
+          state.selectedRootId = rootId;
+          renderAllPreservingScroll();
+          return;
+        }
+        clearSelectedGroup();
+      }
+    }
+
+    function handleRootInput(event) {
+      if (event.target === searchInputNode) {
+        state.search = searchInputNode.value;
+        renderAllPreservingScroll();
+      }
+    }
+
+    function handleRootChange(event) {
+      if (event.target === locationFilterNode) {
+        state.locationFilter = locationFilterNode.value;
+        renderAllPreservingScroll();
+        return;
+      }
+
+      const copySelect = event.target.closest("select[data-copy-id]");
+      if (copySelect) {
+        const group = getSelectedGroup();
+        if (!group) return;
+        const copy = group.copies.find(item => item.id === copySelect.getAttribute("data-copy-id"));
+        if (!copy) return;
+
+        const nextLocation = copySelect.value === "__RETURN_HOME__" ? copy.home : copySelect.value;
+        if (nextLocation === copy.currentLocation) {
+          delete state.draftLocations[copy.id];
+        } else {
+          state.draftLocations[copy.id] = nextLocation;
+        }
+        renderAllPreservingScroll();
+      }
+    }
+
+    function handleRootKeydown(event) {
+      const row = event.target.closest("tr[data-group-id]");
+      if (!row) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        row.click();
+      }
+    }
+
+    function handleDocumentClick(event) {
+      const target = event && event.target;
+      if (state.detailPointerDownInside) {
+        state.detailPointerDownInside = false;
+        return;
+      }
+      if (!root.classList.contains("mini-v2-has-detail")) return;
+      if (isDetailPersistentClickTarget(target)) return;
+      clearSelectedGroup();
+    }
+
+    function handleDocumentPointerDown(event) {
+      const target = event && event.target;
+      state.detailPointerDownInside = !!(target instanceof Element && target.closest("#miniV2DetailPanel"));
+    }
+
+    function isDetailPersistentClickTarget(target) {
+      if (!target || !(target instanceof Element)) return false;
+      if (target.closest("#miniV2DetailPanel")) return true;
+      if (target.closest("tr[data-group-id]")) return true;
+      if (target.closest(".mini-v2-top-card :is(button, input, select, textarea, a, label, [data-action])")) return true;
+      if (target.closest(".mini-v2-filter-row :is(button, input, select, textarea, a, label, [data-action])")) return true;
+      return false;
+    }
+
+    function captureScrollState() {
+      const host = getPrimaryScrollHost();
+      return {
+        host: host,
+        hostTop: host ? host.scrollTop : 0,
+        hostLeft: host ? host.scrollLeft : 0,
+        tableTop: tableScrollNode ? tableScrollNode.scrollTop : null,
+        detailTop: detailScrollNode ? detailScrollNode.scrollTop : null
+      };
+    }
+
+    function restoreScrollState(scrollState) {
+      if (!scrollState) return;
+
+      const apply = function () {
+        const host = scrollState.host || getPrimaryScrollHost();
+        if (host) {
+          if (Math.abs((host.scrollTop || 0) - (scrollState.hostTop || 0)) > 1) {
+            host.scrollTop = scrollState.hostTop || 0;
+          }
+          if (Math.abs((host.scrollLeft || 0) - (scrollState.hostLeft || 0)) > 1) {
+            host.scrollLeft = scrollState.hostLeft || 0;
+          }
+        }
+
+        if (tableScrollNode && scrollState.tableTop !== null) {
+          tableScrollNode.scrollTop = scrollState.tableTop;
+        }
+
+        if (detailScrollNode && scrollState.detailTop !== null) {
+          detailScrollNode.scrollTop = scrollState.detailTop;
+        }
+      };
+
+      apply();
+      requestAnimationFrame(apply);
+    }
+
+    function getPrimaryScrollHost() {
+      return document.scrollingElement || document.documentElement || document.body;
+    }
+
+    function getFilteredGroups() {
+      const search = state.search.trim().toLowerCase();
+
+      return state.groups.filter(group => {
+        if (search && !group.searchText.includes(search)) return false;
+        if (!matchesAvailabilityFilter(group)) return false;
+
+        if (state.locationFilter !== "all") {
+          const matchesLocation = group.home === state.locationFilter
+            || group.copies.some(copy => {
+              const effectiveLocation = state.draftLocations[copy.id] || copy.currentLocation;
+              return effectiveLocation === state.locationFilter;
+            });
+          if (!matchesLocation) return false;
+        }
+
+        return true;
+      });
+    }
+
+    function matchesAvailabilityFilter(group) {
+      if (state.availabilityFilter === "ready") {
+        return group.available === group.total;
+      }
+      if (state.availabilityFilter === "partial") {
+        return group.available > 0 && group.available < group.total;
+      }
+      if (state.availabilityFilter === "checkedOut") {
+        return group.available === 0;
+      }
+      if (state.availabilityFilter === "needsStickers") {
+        return group.needsStickers;
+      }
+      return true;
+    }
+
+    function getAvailabilityCounts() {
+      return state.groups.reduce((counts, group) => {
+        counts[getStatusKey(group)] += 1;
+        if (group.needsStickers) counts.needsStickers += 1;
+        return counts;
+      }, { ready: 0, partial: 0, checkedOut: 0, needsStickers: 0 });
+    }
+
+    function getSelectedGroup() {
+      return state.groups.find(group => group.rootId === state.selectedRootId) || null;
+    }
+
+    function ensureSelectionVisibility() {
+      if (!state.selectedRootId) return;
+      const selectedStillVisible = getFilteredGroups().some(group => group.rootId === state.selectedRootId);
+      if (!selectedStillVisible) {
+        state.selectedRootId = "";
+      }
+    }
+
+    function clearSelectedGroup() {
+      if (!state.selectedRootId) return;
+      state.selectedRootId = "";
+      renderAllPreservingScroll();
+    }
+
+    function getEffectiveLocation(copy) {
+      return state.draftLocations[copy.id] || copy.currentLocation;
+    }
+
+    function isDirty(copy) {
+      return getEffectiveLocation(copy) !== copy.currentLocation;
+    }
+
+    function resetSelectedDraftChanges() {
+      const group = getSelectedGroup();
+      if (!group) return;
+      group.copies.forEach(copy => {
+        delete state.draftLocations[copy.id];
+      });
+    }
+
+    function stageSelectedCopiesHome() {
+      const group = getSelectedGroup();
+      if (!group) return;
+      group.copies.forEach(copy => {
+        if (copy.currentLocation !== copy.home) {
+          state.draftLocations[copy.id] = copy.home;
+        }
+      });
+    }
+
+    function saveSelectedDraftChanges() {
+      const group = getSelectedGroup();
+      if (!group) return;
+
+      state.groups = state.groups.map(existingGroup => {
+        if (existingGroup.rootId !== group.rootId) return existingGroup;
+
+        const updatedCopies = existingGroup.copies.map(copy => {
+          const nextLocation = state.draftLocations[copy.id];
+          if (!nextLocation) return copy;
+          return { ...copy, currentLocation: nextLocation };
+        });
+
+        return enrichGroup({ ...existingGroup, copies: updatedCopies });
+      });
+
+      group.copies.forEach(copy => {
+        delete state.draftLocations[copy.id];
+      });
+    }
+
+    function getStatusKey(group) {
+      if (group.available === 0) return "checkedOut";
+      if (group.available < group.total) return "partial";
+      return "ready";
+    }
+
+    function getStatusLabel(group) {
+      const status = getStatusKey(group);
+      if (status === "checkedOut") return "Checked Out";
+      if (status === "partial") return "Partial";
+      return "Ready";
+    }
+
+    function statusClass(status) {
+      if (status === "checkedOut") return "is-danger";
+      if (status === "partial") return "is-warn";
+      return "is-success";
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+  })();
+</script>
