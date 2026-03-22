@@ -39,24 +39,18 @@
       renderLocationOptions();
       renderAll();
       bindEvents();
-      window.addEventListener("resize", syncDesktopStageWidths);
-      new ResizeObserver(syncDesktopStageWidths).observe(workspaceNode);
+      window.addEventListener("resize", syncDesktopLayoutMetrics);
+      new ResizeObserver(syncDesktopLayoutMetrics).observe(root);
     }
 
     function buildShell() {
       document.getElementById("app").innerHTML = `
         <div id="miniV2Root" class="mini-v2">
           <section class="v2-card mini-v2-top-card">
-            <div class="v2-card-header">Miniature Tracker</div>
-            <div class="v2-card-body">
-              <div class="mini-v2-top-layout">
-                <div class="mini-v2-title-block">
-                  <div class="mini-v2-kicker">Inventory Browser</div>
-                  <h1 class="mini-v2-hero">Browse, pull details, and move copies without leaving the main list.</h1>
-                  <p class="mini-v2-subtitle">This pass is intentionally built on the loot chest shell. The job right now is to make the workspace feel familiar and stable before we wire in real Sheets logic.</p>
-                </div>
-                <div id="miniV2SummaryLane" class="mini-v2-summary-lane"></div>
-              </div>
+            <div class="v2-card-header">PPQ Miniature Tracker</div>
+            <div class="v2-card-body mini-v2-top-card-body">
+              <p class="mini-v2-top-note">Work-in-Progress. This space will be used to submit new miniature entries.</p>
+              <div id="miniV2SummaryLane" class="mini-v2-summary-lane"></div>
             </div>
           </section>
 
@@ -174,7 +168,7 @@
       renderLocationOptions();
       renderTable();
       renderDetail();
-      requestAnimationFrame(syncDesktopStageWidths);
+      requestAnimationFrame(syncDesktopLayoutMetrics);
     }
 
     function renderAllPreservingScroll(existingState) {
@@ -306,11 +300,6 @@
 
       detailContentNode.innerHTML = `
         <div class="mini-v2-detail-panel">
-          <section>
-            <div class="mini-v2-detail-name">${escapeHtml(group.name)}</div>
-            <p class="mini-v2-detail-copy">Click a different row to swap the panel in place. Click the same row or blank background space to close it.</p>
-          </section>
-
           <section class="mini-v2-stat-grid">
             ${renderStatCard("Home", group.home)}
             ${renderStatCard("Available", `<span class="mini-v2-count ${statusClass(getStatusKey(group))}">${group.available}</span>`)}
@@ -586,15 +575,21 @@
       return document.scrollingElement || document.documentElement || document.body;
     }
 
-    function syncDesktopStageWidths() {
+    function syncDesktopLayoutMetrics() {
       if (!desktopMq.matches) {
         root.style.removeProperty("--mini-v2-list-lock-width");
         return;
       }
 
       const workspaceWidth = workspaceNode ? workspaceNode.getBoundingClientRect().width : 0;
+      const workspaceStyles = workspaceNode ? window.getComputedStyle(workspaceNode) : null;
+      const workspaceGap = workspaceStyles
+        ? parseFloat(workspaceStyles.columnGap || workspaceStyles.gap || "0") || 0
+        : 0;
+      const hasDetail = root.classList.contains("mini-v2-has-detail");
+      const lockWidth = hasDetail ? Math.max(0, workspaceWidth - workspaceGap) : workspaceWidth;
       if (workspaceWidth > 0) {
-        root.style.setProperty("--mini-v2-list-lock-width", `${Math.round(workspaceWidth)}px`);
+        root.style.setProperty("--mini-v2-list-lock-width", `${Math.round(lockWidth)}px`);
       }
     }
 
