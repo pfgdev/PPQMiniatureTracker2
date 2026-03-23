@@ -9,6 +9,7 @@
       locationFilter: "all",
       locationMenuOpen: false,
       locationMenuSearch: "",
+      filtersMenuOpen: false,
       selectedRootId: "",
       draftLocations: {},
       detailPointerDownInside: false
@@ -26,6 +27,10 @@
     let locationPopoverNode;
     let locationSearchNode;
     let locationOptionsNode;
+    let filtersShellNode;
+    let filtersButtonNode;
+    let filtersPopoverNode;
+    let filtersMatchCountNode;
     let listStageNode;
     let tableScrollNode;
     let detailPanelNode;
@@ -36,6 +41,7 @@
     let detailScrollNode;
     let detailEmptyNode;
     let detailContentNode;
+    let filtersHideTimer = null;
 
     initMiniV2();
 
@@ -105,7 +111,49 @@
                           </div>
                         </div>
                       </div>
-                      <button class="button mini-v2-action-btn mini-v2-secondary" type="button" data-action="open-filters" disabled title="Filter flyout arrives in the next step.">Filters</button>
+                      <div id="miniV2FiltersShell" class="mini-v2-filters-shell">
+                        <button
+                          id="miniV2FiltersButton"
+                          class="button mini-v2-action-btn mini-v2-secondary"
+                          type="button"
+                          data-action="toggle-filters"
+                          aria-haspopup="dialog"
+                          aria-expanded="false"
+                          aria-controls="miniV2FiltersPopover"
+                        >
+                          Filters
+                        </button>
+                        <div id="miniV2FiltersPopover" class="mini-v2-filters-popover" hidden>
+                          <div class="mini-v2-filters-header">
+                            <div>
+                              <div class="mini-v2-filters-title">Filters</div>
+                              <div class="mini-v2-filters-copy">Combine attributes to narrow the mini list.</div>
+                            </div>
+                            <button class="button mini-v2-filters-link" type="button" data-action="clear-flyout" disabled>Clear all</button>
+                          </div>
+                          <div class="mini-v2-filters-body">
+                            <section class="mini-v2-filters-placeholder-card">
+                              <div class="mini-v2-filters-section-label">Planned Groups</div>
+                              <div class="mini-v2-filters-coming-list">
+                                <span class="mini-v2-chip">Size</span>
+                                <span class="mini-v2-chip">Creature Type</span>
+                                <span class="mini-v2-chip">Role</span>
+                                <span class="mini-v2-chip">Race</span>
+                                <span class="mini-v2-chip">Sex</span>
+                                <span class="mini-v2-chip">Collection</span>
+                              </div>
+                              <div class="mini-v2-filters-placeholder-copy">This pass is only tuning flyout placement, width, and open/close behavior. Filter groups land in the next step.</div>
+                            </section>
+                          </div>
+                          <div class="mini-v2-filters-footer">
+                            <div id="miniV2FiltersMatchCount" class="mini-v2-filters-match"></div>
+                            <div class="mini-v2-filters-footer-actions">
+                              <button class="button mini-v2-copy-btn" type="button" data-action="cancel-filters">Cancel</button>
+                              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="apply-filters">Apply Filters</button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                       <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear</button>
                     </div>
                   </div>
@@ -151,6 +199,10 @@
       locationPopoverNode = document.getElementById("miniV2LocationPopover");
       locationSearchNode = document.getElementById("miniV2LocationSearch");
       locationOptionsNode = document.getElementById("miniV2LocationOptions");
+      filtersShellNode = document.getElementById("miniV2FiltersShell");
+      filtersButtonNode = document.getElementById("miniV2FiltersButton");
+      filtersPopoverNode = document.getElementById("miniV2FiltersPopover");
+      filtersMatchCountNode = document.getElementById("miniV2FiltersMatchCount");
       locationTriggerNode.querySelector(".mini-v2-combobox-caret").textContent = "";
       locationClearNode.textContent = "x";
       listStageNode = document.getElementById("miniV2ListStage");
@@ -207,6 +259,7 @@
       renderSummaryLane();
       renderListHeader();
       renderLocationFilter();
+      renderFiltersShell();
       renderTable();
       renderDetail();
       requestAnimationFrame(syncDesktopLayoutMetrics);
@@ -280,6 +333,36 @@
           ${state.locationFilter === option.value ? '<span class="mini-v2-combobox-option-check" aria-hidden="true">✓</span>' : ""}
         </button>
       `).join("");
+    }
+
+    function renderFiltersShell() {
+      const matchCount = getFilteredGroups().length;
+      filtersShellNode.classList.toggle("is-open", state.filtersMenuOpen);
+      filtersButtonNode.setAttribute("aria-expanded", state.filtersMenuOpen ? "true" : "false");
+      filtersMatchCountNode.textContent = matchCount === 1 ? "1 miniature matches" : `${matchCount} miniatures match`;
+
+      if (state.filtersMenuOpen) {
+        if (filtersHideTimer) {
+          clearTimeout(filtersHideTimer);
+          filtersHideTimer = null;
+        }
+        filtersPopoverNode.hidden = false;
+        requestAnimationFrame(() => {
+          filtersPopoverNode.classList.add("is-visible");
+        });
+        return;
+      }
+
+      filtersPopoverNode.classList.remove("is-visible");
+      if (filtersHideTimer) {
+        clearTimeout(filtersHideTimer);
+      }
+      filtersHideTimer = setTimeout(() => {
+        if (!state.filtersMenuOpen) {
+          filtersPopoverNode.hidden = true;
+        }
+        filtersHideTimer = null;
+      }, 180);
     }
 
     function renderTable() {
@@ -463,10 +546,19 @@
     function handleRootClick(event) {
       const clickTarget = event.target instanceof Element ? event.target : null;
       const clickedInsideLocationCombobox = !!(clickTarget && clickTarget.closest("#miniV2LocationCombobox"));
+      const clickedInsideFiltersShell = !!(clickTarget && clickTarget.closest("#miniV2FiltersShell"));
+      const shouldCloseLocationMenu = state.locationMenuOpen && !clickedInsideLocationCombobox;
+      const shouldCloseFiltersMenu = state.filtersMenuOpen && !clickedInsideFiltersShell;
 
-      if (state.locationMenuOpen && !clickedInsideLocationCombobox) {
+      if (shouldCloseLocationMenu) {
         state.locationMenuOpen = false;
         state.locationMenuSearch = "";
+        renderLocationFilter();
+      }
+
+      if (shouldCloseFiltersMenu) {
+        state.filtersMenuOpen = false;
+        renderFiltersShell();
       }
 
       const actionButton = event.target.closest("button[data-action]");
@@ -474,8 +566,20 @@
         event.stopPropagation();
         const action = actionButton.getAttribute("data-action");
 
-        if (action === "open-filters") {
-          renderAllPreservingScroll();
+        if (action === "toggle-filters") {
+          state.filtersMenuOpen = !state.filtersMenuOpen;
+          renderFiltersShell();
+          return;
+        }
+
+        if (action === "clear-flyout") {
+          renderFiltersShell();
+          return;
+        }
+
+        if (action === "cancel-filters" || action === "apply-filters") {
+          state.filtersMenuOpen = false;
+          renderFiltersShell();
           return;
         }
 
@@ -589,6 +693,13 @@
     }
 
     function handleRootKeydown(event) {
+      if (event.key === "Escape" && state.filtersMenuOpen) {
+        state.filtersMenuOpen = false;
+        renderFiltersShell();
+        filtersButtonNode.focus();
+        return;
+      }
+
       if (event.key === "Escape" && state.locationMenuOpen) {
         state.locationMenuOpen = false;
         state.locationMenuSearch = "";
@@ -618,6 +729,10 @@
 
     function handleDocumentClick(event) {
       const target = event && event.target;
+      if (state.filtersMenuOpen && target instanceof Element && !target.closest("#miniV2FiltersShell")) {
+        state.filtersMenuOpen = false;
+        renderFiltersShell();
+      }
       if (state.locationMenuOpen && target instanceof Element && !target.closest("#miniV2LocationCombobox")) {
         state.locationMenuOpen = false;
         state.locationMenuSearch = "";
@@ -640,6 +755,7 @@
     function isDetailPersistentClickTarget(target) {
       if (!target || !(target instanceof Element)) return false;
       if (target.closest("#miniV2DetailPanel")) return true;
+      if (target.closest("#miniV2FiltersShell")) return true;
       if (target.closest("tr[data-group-id]")) return true;
       if (target.closest(".mini-v2-top-card :is(button, input, select, textarea, a, label, [data-action])")) return true;
       if (target.closest(".mini-v2-controls :is(button, input, select, textarea, a, label, [data-action])")) return true;
