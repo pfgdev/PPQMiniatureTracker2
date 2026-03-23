@@ -92,6 +92,7 @@
     let detailEmptyNode;
     let detailContentNode;
     let facetHideTimer = null;
+    let facetSwapTimer = null;
 
     initMiniV2();
 
@@ -249,6 +250,7 @@
       root.addEventListener("input", handleRootInput);
       root.addEventListener("change", handleRootChange);
       root.addEventListener("keydown", handleRootKeydown);
+      facetPopoverNode.addEventListener("transitionend", handleFacetPopoverTransitionEnd);
       document.addEventListener("click", handleDocumentClick);
       document.addEventListener("pointerdown", handleDocumentPointerDown, true);
     }
@@ -436,37 +438,85 @@
       facetShellNode.classList.toggle("has-open-facet", !!activeConfig);
 
       if (activeConfig) {
+        const wasHidden = facetPopoverNode.hidden;
+        const previousFacetKey = facetPopoverNode.getAttribute("data-facet-key") || "";
+        const startHeight = !wasHidden ? facetPopoverNode.getBoundingClientRect().height : 0;
         const activeCount = getFacetCount(activeConfig.key);
         facetPopoverTitleNode.textContent = activeConfig.label;
         facetPopoverClearNode.disabled = !activeCount;
         facetPopoverBodyNode.innerHTML = renderFacetFlyoutBody(activeConfig);
+        facetPopoverNode.setAttribute("data-facet-key", activeConfig.key);
+        if (previousFacetKey !== activeConfig.key) {
+          facetPopoverBodyNode.scrollTop = 0;
+        }
 
         if (facetHideTimer) {
           clearTimeout(facetHideTimer);
           facetHideTimer = null;
         }
 
-        if (facetPopoverNode.hidden) {
+        if (wasHidden) {
+          facetPopoverNode.style.height = "";
           facetPopoverNode.hidden = false;
           requestAnimationFrame(() => {
             facetPopoverNode.classList.add("is-visible");
           });
         } else {
           facetPopoverNode.classList.add("is-visible");
+          animateFacetPopoverHeight(startHeight);
+          if (previousFacetKey && previousFacetKey !== activeConfig.key) {
+            animateFacetPopoverSwap();
+          }
         }
         return;
       }
 
       facetPopoverNode.classList.remove("is-visible");
+      facetPopoverNode.style.height = "";
       if (facetHideTimer) {
         clearTimeout(facetHideTimer);
       }
       facetHideTimer = setTimeout(() => {
         if (!state.openFacetKey) {
           facetPopoverNode.hidden = true;
+          facetPopoverNode.removeAttribute("data-facet-key");
         }
         facetHideTimer = null;
       }, 180);
+    }
+
+    function animateFacetPopoverHeight(startHeight) {
+      if (!facetPopoverNode || !startHeight) return;
+
+      facetPopoverNode.style.height = "auto";
+      const endHeight = facetPopoverNode.getBoundingClientRect().height;
+
+      if (!endHeight || Math.abs(endHeight - startHeight) < 2) {
+        facetPopoverNode.style.height = "";
+        return;
+      }
+
+      facetPopoverNode.style.height = `${Math.round(startHeight)}px`;
+      facetPopoverNode.getBoundingClientRect();
+      requestAnimationFrame(() => {
+        facetPopoverNode.style.height = `${Math.round(endHeight)}px`;
+      });
+    }
+
+    function animateFacetPopoverSwap() {
+      if (!facetPopoverBodyNode) return;
+
+      facetPopoverBodyNode.classList.remove("is-swapping");
+      facetPopoverBodyNode.getBoundingClientRect();
+      facetPopoverBodyNode.classList.add("is-swapping");
+
+      if (facetSwapTimer) {
+        clearTimeout(facetSwapTimer);
+      }
+      facetSwapTimer = setTimeout(() => {
+        facetPopoverBodyNode.classList.remove("is-swapping");
+        facetSwapTimer = null;
+      }, 170);
     }
 
     function renderFacetFlyoutBody(config) {
@@ -970,6 +1020,13 @@
     function handleDocumentPointerDown(event) {
       const target = event && event.target;
       state.detailPointerDownInside = !!(target instanceof Element && target.closest("#miniV2DetailPanel"));
+    }
+
+    function handleFacetPopoverTransitionEnd(event) {
+      if (event.target !== facetPopoverNode) return;
+      if (event.propertyName !== "height") return;
+      if (!state.openFacetKey) return;
+      facetPopoverNode.style.height = "";
     }
 
     function isDetailPersistentClickTarget(target) {

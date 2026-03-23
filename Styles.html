@@ -501,6 +501,7 @@
     transform-origin: top left;
     pointer-events: none;
     transition:
+      height 180ms cubic-bezier(.2, .8, .2, 1),
       opacity 140ms ease,
       transform 180ms cubic-bezier(.2, .8, .2, 1);
   }
@@ -555,6 +556,16 @@
     overflow-y: auto;
     display: grid;
     gap: 12px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .mini-v2-facet-popover-body::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mini-v2-facet-popover-body.is-swapping {
+    animation: mini-v2-facet-body-swap 150ms ease;
   }
 
   .mini-v2-facet-group,
@@ -647,6 +658,17 @@
     font-size: 13px;
     font-weight: 600;
     line-height: 1.2;
+  }
+
+  @keyframes mini-v2-facet-body-swap {
+    from {
+      opacity: 0.55;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .mini-v2-field {
