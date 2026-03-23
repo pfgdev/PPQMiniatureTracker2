@@ -513,83 +513,135 @@ Why third:
 
 - the finder workflow should lead the left side
 
-### 4. Replace Quick Filters With Real Filters
+### 4. Replace Quick Filters With Facet Launchers
 
 Deliverables:
 
 - remove the permanent status-chip row
-- add a `Filters` trigger button or popover/modal
-- build applied-filter chips that only appear when filters are active
-- support compact overflow behavior such as `+ N more`
+- remove the single all-in-one `Filters` button and giant filter flyout
+- replace it with a two-row browser control area
+- make the facet bar itself act as the active-state summary instead of an applied-chip row
 
 Why fourth:
 
-- the current quick filters are conceptually weak and compress badly
-- the left side should become a real finder before we keep polishing the table below it
+- the giant filter panel is too dense for the left pane and collapsed browser state
+- category-at-a-time filtering is a better fit for this tool than a big control center
+- the search row should stay dominant while filters become slimmer and more tactical
 
 Implementation note:
 
-- treat `4.1` through `4.3` as Pass 1 scaffolding
-- treat `4.4` through `4.7` as Pass 2 behavior, chip rendering, and cleanup
+- treat `4.41` through `4.43` as the new architecture and scaffold pass
+- treat `4.44` onward as the category-by-category flyout implementation pass
 
-#### 4.1 Replace The Current Quick-Filter Row
-
-Deliverables:
-
-- remove the permanent status-bucket chip strip from the always-visible layout
-- keep the left control row focused on search, location, filters, and clear
-
-#### 4.2 Convert Location To A Searchable Single-Select
+#### 4.41 Swap To The Two-Row Browser Control Area
 
 Deliverables:
 
-- searchable combobox behavior
-- clearable single selected location
-- no multi-select location in V1
+- Row 1:
+  - search input
+  - location selector
+  - clear button
+- Row 2:
+  - `Size`
+  - `Type`
+  - `Role`
+  - `Race`
+  - `More`
+- remove the visible all-in-one `Filters` flyout architecture
 
-#### 4.3 Build The Anchored Filter Flyout Shell
-
-Deliverables:
-
-- `Filters` button
-- anchored flyout/popup shell
-- header with `Clear all`
-- footer with `Cancel` / `Apply Filters`
-
-#### 4.4 Add The First V1 Filter Groups
-
-Deliverables:
-
-- Size pills
-- Creature Type checkbox grid
-- Role pills
-- Race searchable checkbox list
-- Sex pills
-- Collection/Admin checkboxes
-
-#### 4.5 Add Filter Logic And Match Count
+#### 4.42 Build One Reusable Facet Launcher Button
 
 Deliverables:
 
-- OR logic within categories
-- AND logic across categories
-- visible match count in the flyout footer
+- outlined inactive state
+- lightly tinted active state
+- stronger open state
+- count on button only when 2 or more values are selected
 
-#### 4.6 Render Applied Filter Chips
-
-Deliverables:
-
-- chips appear only when filters are active
-- chips are removable
-- overflow behavior such as `+ N more`
-
-#### 4.7 Final Step-4 Cleanup
+#### 4.43 Build One Reusable Facet Flyout Shell
 
 Deliverables:
 
-- remove any remaining dependency on the old status-bucket mental model
-- make sure the search bar remains dominant when the inspector opens
-- confirm the filter system still compresses gracefully at tighter widths
+- one shared anchored flyout under the facet row
+- only one facet view open at a time
+- active facet button behaves like a tab for the shared panel
+- no inner search bars
+- no footer apply/cancel pattern
+- category-level clear link inside each flyout
+
+#### 4.44 Build One Reusable Filter Tile Component
+
+Deliverables:
+
+- one consistent selectable tile used across all categories
+- stronger selected state:
+  - stronger fill
+  - stronger border
+  - visible checkmark
+
+#### 4.45 Implement `Size`
+
+Deliverables:
+
+- 3-column compact tile grid
+- options:
+  - Tiny
+  - Small
+  - Medium
+  - Large
+  - Huge
+  - Gargantuan
+
+#### 4.46 Implement `Type`
+
+Deliverables:
+
+- 2-column compact tile grid
+- all creature types
+
+#### 4.47 Implement `Role`
+
+Deliverables:
+
+- 3-column grid if comfortable, otherwise 2-column
+- all role values
+
+#### 4.48 Implement `Race`
+
+Deliverables:
+
+- 2-column dense tile grid
+- no search field
+- let the flyout itself scroll if needed
+
+#### 4.49 Implement `More`
+
+Deliverables:
+
+- grouped small sections
+- `Sex`
+- collection/admin flags:
+  - `Painted only`
+  - `Needs stickers only`
+
+#### 4.50 Wire Facet Counts And Clear Behavior
+
+Deliverables:
+
+- facet buttons reflect active state
+- counts shown on facet buttons when useful
+- `Clear` resets:
+  - search text
+  - location
+  - all active facet filters
+
+#### 4.51 Final Step-4 Cleanup
+
+Deliverables:
+
+- confirm OR-within / AND-across logic still reads clearly
+- make sure the facet row compresses gracefully when the inspector opens
+- confirm no category flyout feels oversized or too padded
 
 ### 5. Left Results Table
 

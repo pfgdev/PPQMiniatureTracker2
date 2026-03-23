@@ -1,6 +1,53 @@
 <script>
   (function () {
     const desktopMq = window.matchMedia("(min-width: 980px)");
+    const FILTER_OPTIONS = {
+      sizes: ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"],
+      creatureTypes: [
+        "Aberration",
+        "Beast",
+        "Celestial",
+        "Construct",
+        "Dragon",
+        "Elemental",
+        "Fey",
+        "Fiend",
+        "Giant",
+        "Humanoid",
+        "Monstrosity",
+        "Ooze",
+        "Plant",
+        "Undead",
+        "n/a"
+      ],
+      roles: ["Melee", "Ranged", "Spellcaster", "Support", "Tank", "Boss", "Minion", "NPC", "Other", "Various", "n/a"],
+      sexes: ["Female", "Male", "n/a"],
+      races: [
+        "Aasimar",
+        "Bugbear",
+        "Dragonborn",
+        "Drow",
+        "Dwarf",
+        "Elf",
+        "Gnoll",
+        "Gnome",
+        "Goblin",
+        "Goliath",
+        "Half-Elf",
+        "Half-Orc",
+        "Halfling",
+        "Hobgoblin",
+        "Human",
+        "Kobold",
+        "Lizardfolk",
+        "Orc",
+        "Tiefling",
+        "Tortle",
+        "Yuan-ti",
+        "other",
+        "n/a"
+      ]
+    };
 
     const state = {
       groups: INITIAL_STATE.groups.map(enrichGroup),
@@ -9,7 +56,8 @@
       locationFilter: "all",
       locationMenuOpen: false,
       locationMenuSearch: "",
-      filtersMenuOpen: false,
+      filtersApplied: createEmptyFilterState(),
+      openFacetKey: "",
       selectedRootId: "",
       draftLocations: {},
       detailPointerDownInside: false
@@ -27,10 +75,12 @@
     let locationPopoverNode;
     let locationSearchNode;
     let locationOptionsNode;
-    let filtersShellNode;
-    let filtersButtonNode;
-    let filtersPopoverNode;
-    let filtersMatchCountNode;
+    let facetShellNode;
+    let facetBarNode;
+    let facetPopoverNode;
+    let facetPopoverTitleNode;
+    let facetPopoverClearNode;
+    let facetPopoverBodyNode;
     let listStageNode;
     let tableScrollNode;
     let detailPanelNode;
@@ -41,7 +91,7 @@
     let detailScrollNode;
     let detailEmptyNode;
     let detailContentNode;
-    let filtersHideTimer = null;
+    let facetHideTimer = null;
 
     initMiniV2();
 
@@ -77,7 +127,7 @@
                   <div class="mini-v2-controls">
                     <div class="mini-v2-search-row">
                       <div class="mini-v2-field">
-                        <input id="miniV2SearchInput" type="search" placeholder="Search name, sticker, note, or location...">
+                        <input id="miniV2SearchInput" type="search" placeholder="Search name, sticker, or details...">
                       </div>
                       <div class="mini-v2-field">
                         <div id="miniV2LocationCombobox" class="mini-v2-combobox">
@@ -111,50 +161,25 @@
                           </div>
                         </div>
                       </div>
-                      <div id="miniV2FiltersShell" class="mini-v2-filters-shell">
-                        <button
-                          id="miniV2FiltersButton"
-                          class="button mini-v2-action-btn mini-v2-secondary"
-                          type="button"
-                          data-action="toggle-filters"
-                          aria-haspopup="dialog"
-                          aria-expanded="false"
-                          aria-controls="miniV2FiltersPopover"
-                        >
-                          Filters
-                        </button>
-                        <div id="miniV2FiltersPopover" class="mini-v2-filters-popover" hidden>
-                          <div class="mini-v2-filters-header">
-                            <div>
-                              <div class="mini-v2-filters-title">Filters</div>
-                              <div class="mini-v2-filters-copy">Combine attributes to narrow the mini list.</div>
-                            </div>
-                            <button class="button mini-v2-filters-link" type="button" data-action="clear-flyout" disabled>Clear all</button>
-                          </div>
-                          <div class="mini-v2-filters-body">
-                            <section class="mini-v2-filters-placeholder-card">
-                              <div class="mini-v2-filters-section-label">Planned Groups</div>
-                              <div class="mini-v2-filters-coming-list">
-                                <span class="mini-v2-chip">Size</span>
-                                <span class="mini-v2-chip">Creature Type</span>
-                                <span class="mini-v2-chip">Role</span>
-                                <span class="mini-v2-chip">Race</span>
-                                <span class="mini-v2-chip">Sex</span>
-                                <span class="mini-v2-chip">Collection</span>
-                              </div>
-                              <div class="mini-v2-filters-placeholder-copy">This pass is only tuning flyout placement, width, and open/close behavior. Filter groups land in the next step.</div>
-                            </section>
-                          </div>
-                          <div class="mini-v2-filters-footer">
-                            <div id="miniV2FiltersMatchCount" class="mini-v2-filters-match"></div>
-                            <div class="mini-v2-filters-footer-actions">
-                              <button class="button mini-v2-copy-btn" type="button" data-action="cancel-filters">Cancel</button>
-                              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="apply-filters">Apply Filters</button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
                       <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear</button>
+                    </div>
+                    <div id="miniV2FacetShell" class="mini-v2-facet-shell">
+                      <div id="miniV2FacetBar" class="mini-v2-facet-row"></div>
+                      <div id="miniV2FacetPopover" class="mini-v2-facet-popover" hidden>
+                        <div class="mini-v2-facet-popover-header">
+                          <div id="miniV2FacetPopoverTitle" class="mini-v2-facet-popover-title"></div>
+                          <button
+                            id="miniV2FacetPopoverClear"
+                            class="button mini-v2-facet-popover-link"
+                            type="button"
+                            data-action="clear-open-facet"
+                            disabled
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        <div id="miniV2FacetPopoverBody" class="mini-v2-facet-popover-body"></div>
+                      </div>
                     </div>
                   </div>
                   <div id="miniV2TableScroll" class="mini-v2-table-scroll"></div>
@@ -199,10 +224,12 @@
       locationPopoverNode = document.getElementById("miniV2LocationPopover");
       locationSearchNode = document.getElementById("miniV2LocationSearch");
       locationOptionsNode = document.getElementById("miniV2LocationOptions");
-      filtersShellNode = document.getElementById("miniV2FiltersShell");
-      filtersButtonNode = document.getElementById("miniV2FiltersButton");
-      filtersPopoverNode = document.getElementById("miniV2FiltersPopover");
-      filtersMatchCountNode = document.getElementById("miniV2FiltersMatchCount");
+      facetShellNode = document.getElementById("miniV2FacetShell");
+      facetBarNode = document.getElementById("miniV2FacetBar");
+      facetPopoverNode = document.getElementById("miniV2FacetPopover");
+      facetPopoverTitleNode = document.getElementById("miniV2FacetPopoverTitle");
+      facetPopoverClearNode = document.getElementById("miniV2FacetPopoverClear");
+      facetPopoverBodyNode = document.getElementById("miniV2FacetPopoverBody");
       locationTriggerNode.querySelector(".mini-v2-combobox-caret").textContent = "";
       locationClearNode.textContent = "x";
       listStageNode = document.getElementById("miniV2ListStage");
@@ -259,7 +286,8 @@
       renderSummaryLane();
       renderListHeader();
       renderLocationFilter();
-      renderFiltersShell();
+      renderFacetBar();
+      renderFacetFlyout();
       renderTable();
       renderDetail();
       requestAnimationFrame(syncDesktopLayoutMetrics);
@@ -293,13 +321,12 @@
 
     function renderLocationFilter() {
       searchInputNode.value = state.search;
-      locationComboboxNode.classList.toggle("is-clearable", state.locationFilter !== "all");
       locationComboboxNode.classList.toggle("is-open", state.locationMenuOpen);
       locationLabelNode.textContent = state.locationFilter === "all" ? "All locations" : state.locationFilter;
       locationTriggerNode.setAttribute("aria-expanded", state.locationMenuOpen ? "true" : "false");
       locationTriggerNode.classList.toggle("is-active", state.locationFilter !== "all");
       locationTriggerNode.classList.toggle("is-open", state.locationMenuOpen);
-      locationClearNode.hidden = state.locationFilter === "all";
+      locationClearNode.hidden = true;
       locationPopoverNode.hidden = !state.locationMenuOpen;
       locationSearchNode.value = state.locationMenuSearch;
 
@@ -335,34 +362,203 @@
       `).join("");
     }
 
-    function renderFiltersShell() {
-      const matchCount = getFilteredGroups().length;
-      filtersShellNode.classList.toggle("is-open", state.filtersMenuOpen);
-      filtersButtonNode.setAttribute("aria-expanded", state.filtersMenuOpen ? "true" : "false");
-      filtersMatchCountNode.textContent = matchCount === 1 ? "1 miniature matches" : `${matchCount} miniatures match`;
+    function renderFacetBar() {
+      const facetConfigs = getFacetConfigs();
+      facetBarNode.innerHTML = facetConfigs.map(config => renderFacetButton(config)).join("");
+    }
 
-      if (state.filtersMenuOpen) {
-        if (filtersHideTimer) {
-          clearTimeout(filtersHideTimer);
-          filtersHideTimer = null;
-        }
-        filtersPopoverNode.hidden = false;
-        requestAnimationFrame(() => {
-          filtersPopoverNode.classList.add("is-visible");
-        });
+    function renderFacetButton(config) {
+      const count = getFacetCount(config.key);
+      const isActive = count > 0;
+      const isOpen = state.openFacetKey === config.key;
+
+      return `
+        <button
+          class="mini-v2-facet-btn ${isActive ? "is-active" : ""} ${isOpen ? "is-open" : ""}"
+          type="button"
+          data-action="toggle-facet"
+          data-facet-key="${escapeHtml(config.key)}"
+          aria-pressed="${isActive ? "true" : "false"}"
+          aria-expanded="${isOpen ? "true" : "false"}"
+        >
+          <span class="mini-v2-facet-label">${escapeHtml(config.label)}</span>
+          ${count > 1 ? `<span class="mini-v2-facet-count">${count}</span>` : ""}
+        </button>
+      `;
+    }
+
+    function getFacetCount(facetKey) {
+      if (facetKey === "more") {
+        return state.filtersApplied.roles.length
+          + (state.filtersApplied.paintedOnly ? 1 : 0)
+          + (state.filtersApplied.needsStickersOnly ? 1 : 0);
+      }
+
+      const values = state.filtersApplied[facetKey];
+      return Array.isArray(values) ? values.length : 0;
+    }
+
+    function clearOpenFacetSelections() {
+      if (state.openFacetKey === "more") {
+        state.filtersApplied.roles = [];
+        state.filtersApplied.paintedOnly = false;
+        state.filtersApplied.needsStickersOnly = false;
         return;
       }
 
-      filtersPopoverNode.classList.remove("is-visible");
-      if (filtersHideTimer) {
-        clearTimeout(filtersHideTimer);
+      if (!state.openFacetKey) return;
+      if (Array.isArray(state.filtersApplied[state.openFacetKey])) {
+        state.filtersApplied[state.openFacetKey] = [];
       }
-      filtersHideTimer = setTimeout(() => {
-        if (!state.filtersMenuOpen) {
-          filtersPopoverNode.hidden = true;
+    }
+
+    function toggleAppliedFacetValue(kind, value) {
+      if (!kind || !value || !Array.isArray(state.filtersApplied[kind])) return;
+      const nextValues = state.filtersApplied[kind].slice();
+      const existingIndex = nextValues.indexOf(value);
+      if (existingIndex >= 0) {
+        nextValues.splice(existingIndex, 1);
+      } else {
+        nextValues.push(value);
+      }
+      state.filtersApplied[kind] = nextValues;
+    }
+
+    function toggleAppliedFacetFlag(flagKey) {
+      if (!(flagKey in state.filtersApplied)) return;
+      state.filtersApplied[flagKey] = !state.filtersApplied[flagKey];
+    }
+
+    function renderFacetFlyout() {
+      if (!facetPopoverNode) return;
+
+      const activeConfig = getFacetConfigs().find(config => config.key === state.openFacetKey) || null;
+      facetShellNode.classList.toggle("has-open-facet", !!activeConfig);
+
+      if (activeConfig) {
+        const activeCount = getFacetCount(activeConfig.key);
+        facetPopoverTitleNode.textContent = activeConfig.label;
+        facetPopoverClearNode.disabled = !activeCount;
+        facetPopoverBodyNode.innerHTML = renderFacetFlyoutBody(activeConfig);
+
+        if (facetHideTimer) {
+          clearTimeout(facetHideTimer);
+          facetHideTimer = null;
         }
-        filtersHideTimer = null;
+
+        if (facetPopoverNode.hidden) {
+          facetPopoverNode.hidden = false;
+          requestAnimationFrame(() => {
+            facetPopoverNode.classList.add("is-visible");
+          });
+        } else {
+          facetPopoverNode.classList.add("is-visible");
+        }
+        return;
+      }
+
+      facetPopoverNode.classList.remove("is-visible");
+      if (facetHideTimer) {
+        clearTimeout(facetHideTimer);
+      }
+      facetHideTimer = setTimeout(() => {
+        if (!state.openFacetKey) {
+          facetPopoverNode.hidden = true;
+        }
+        facetHideTimer = null;
       }, 180);
+    }
+
+    function renderFacetFlyoutBody(config) {
+      if (config.key === "sizes") {
+        return renderFacetTileGrid("sizes", FILTER_OPTIONS.sizes, state.filtersApplied.sizes, "is-three-col");
+      }
+
+      if (config.key === "creatureTypes") {
+        return renderFacetTileGrid("creatureTypes", FILTER_OPTIONS.creatureTypes, state.filtersApplied.creatureTypes, "is-three-col");
+      }
+
+      if (config.key === "races") {
+        return renderFacetTileGrid("races", FILTER_OPTIONS.races, state.filtersApplied.races, "is-three-col");
+      }
+
+      if (config.key === "sexes") {
+        return renderFacetTileGrid("sexes", FILTER_OPTIONS.sexes, state.filtersApplied.sexes, "is-three-col");
+      }
+
+      if (config.key === "more") {
+        return `
+          <div class="mini-v2-facet-more">
+            ${renderFacetGroup("Role", renderFacetTileGrid("roles", FILTER_OPTIONS.roles, state.filtersApplied.roles, "is-three-col"))}
+            ${renderFacetGroup("Collection", `
+              <div class="mini-v2-facet-tile-grid is-two-col">
+                ${renderFacetFlagTile("paintedOnly", "Painted only", state.filtersApplied.paintedOnly)}
+                ${renderFacetFlagTile("needsStickersOnly", "Needs stickers only", state.filtersApplied.needsStickersOnly)}
+              </div>
+            `)}
+          </div>
+        `;
+      }
+
+      return "";
+    }
+
+    function getFacetConfigs() {
+      return [
+        { key: "sizes", label: "Size" },
+        { key: "creatureTypes", label: "Type" },
+        { key: "races", label: "Race" },
+        { key: "sexes", label: "Sex" },
+        { key: "more", label: "More" }
+      ];
+    }
+
+    function renderFacetGroup(label, bodyMarkup) {
+      return `
+        <section class="mini-v2-facet-group">
+          <div class="mini-v2-facet-group-label">${escapeHtml(label)}</div>
+          ${bodyMarkup}
+        </section>
+      `;
+    }
+
+    function renderFacetTileGrid(kind, options, selectedValues, layoutClass) {
+      return `
+        <div class="mini-v2-facet-tile-grid ${layoutClass}">
+          ${options.map(option => renderFacetTile(kind, option, selectedValues.includes(option))).join("")}
+        </div>
+      `;
+    }
+
+    function renderFacetTile(kind, value, isSelected) {
+      return `
+        <button
+          class="mini-v2-facet-tile ${isSelected ? "is-selected" : ""}"
+          type="button"
+          data-action="toggle-facet-value"
+          data-facet-kind="${escapeHtml(kind)}"
+          data-facet-value="${escapeHtml(value)}"
+          aria-pressed="${isSelected ? "true" : "false"}"
+        >
+          <span class="mini-v2-facet-tile-check" aria-hidden="true">${isSelected ? "x" : ""}</span>
+          <span class="mini-v2-facet-tile-label">${escapeHtml(value)}</span>
+        </button>
+      `;
+    }
+
+    function renderFacetFlagTile(flagKey, label, enabled) {
+      return `
+        <button
+          class="mini-v2-facet-tile ${enabled ? "is-selected" : ""}"
+          type="button"
+          data-action="toggle-facet-flag"
+          data-facet-flag="${escapeHtml(flagKey)}"
+          aria-pressed="${enabled ? "true" : "false"}"
+        >
+          <span class="mini-v2-facet-tile-check" aria-hidden="true">${enabled ? "x" : ""}</span>
+          <span class="mini-v2-facet-tile-label">${escapeHtml(label)}</span>
+        </button>
+      `;
     }
 
     function renderTable() {
@@ -546,9 +742,8 @@
     function handleRootClick(event) {
       const clickTarget = event.target instanceof Element ? event.target : null;
       const clickedInsideLocationCombobox = !!(clickTarget && clickTarget.closest("#miniV2LocationCombobox"));
-      const clickedInsideFiltersShell = !!(clickTarget && clickTarget.closest("#miniV2FiltersShell"));
+      const clickedInsideFacetShell = !!(clickTarget && clickTarget.closest("#miniV2FacetShell"));
       const shouldCloseLocationMenu = state.locationMenuOpen && !clickedInsideLocationCombobox;
-      const shouldCloseFiltersMenu = state.filtersMenuOpen && !clickedInsideFiltersShell;
 
       if (shouldCloseLocationMenu) {
         state.locationMenuOpen = false;
@@ -556,9 +751,10 @@
         renderLocationFilter();
       }
 
-      if (shouldCloseFiltersMenu) {
-        state.filtersMenuOpen = false;
-        renderFiltersShell();
+      if (state.openFacetKey && !clickedInsideFacetShell) {
+        state.openFacetKey = "";
+        renderFacetBar();
+        renderFacetFlyout();
       }
 
       const actionButton = event.target.closest("button[data-action]");
@@ -566,20 +762,32 @@
         event.stopPropagation();
         const action = actionButton.getAttribute("data-action");
 
-        if (action === "toggle-filters") {
-          state.filtersMenuOpen = !state.filtersMenuOpen;
-          renderFiltersShell();
+        if (action === "toggle-facet") {
+          const facetKey = actionButton.getAttribute("data-facet-key") || "";
+          state.openFacetKey = state.openFacetKey === facetKey ? "" : facetKey;
+          renderFacetBar();
+          renderFacetFlyout();
           return;
         }
 
-        if (action === "clear-flyout") {
-          renderFiltersShell();
+        if (action === "toggle-facet-value") {
+          toggleAppliedFacetValue(
+            actionButton.getAttribute("data-facet-kind") || "",
+            actionButton.getAttribute("data-facet-value") || ""
+          );
+          renderAllPreservingScroll();
           return;
         }
 
-        if (action === "cancel-filters" || action === "apply-filters") {
-          state.filtersMenuOpen = false;
-          renderFiltersShell();
+        if (action === "toggle-facet-flag") {
+          toggleAppliedFacetFlag(actionButton.getAttribute("data-facet-flag") || "");
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "clear-open-facet") {
+          clearOpenFacetSelections();
+          renderAllPreservingScroll();
           return;
         }
 
@@ -619,6 +827,8 @@
           state.locationFilter = "all";
           state.locationMenuSearch = "";
           state.locationMenuOpen = false;
+          state.filtersApplied = createEmptyFilterState();
+          state.openFacetKey = "";
           renderAllPreservingScroll();
           return;
         }
@@ -671,7 +881,9 @@
       if (event.target === locationSearchNode) {
         state.locationMenuSearch = locationSearchNode.value;
         renderLocationFilter();
+        return;
       }
+
     }
 
     function handleRootChange(event) {
@@ -693,10 +905,17 @@
     }
 
     function handleRootKeydown(event) {
-      if (event.key === "Escape" && state.filtersMenuOpen) {
-        state.filtersMenuOpen = false;
-        renderFiltersShell();
-        filtersButtonNode.focus();
+      if (event.key === "Escape" && state.openFacetKey) {
+        const currentFacetKey = state.openFacetKey;
+        state.openFacetKey = "";
+        renderFacetBar();
+        renderFacetFlyout();
+        requestAnimationFrame(() => {
+          const button = root.querySelector(`button[data-facet-key="${currentFacetKey}"]`);
+          if (button instanceof HTMLElement) {
+            button.focus();
+          }
+        });
         return;
       }
 
@@ -729,14 +948,15 @@
 
     function handleDocumentClick(event) {
       const target = event && event.target;
-      if (state.filtersMenuOpen && target instanceof Element && !target.closest("#miniV2FiltersShell")) {
-        state.filtersMenuOpen = false;
-        renderFiltersShell();
-      }
       if (state.locationMenuOpen && target instanceof Element && !target.closest("#miniV2LocationCombobox")) {
         state.locationMenuOpen = false;
         state.locationMenuSearch = "";
         renderLocationFilter();
+      }
+      if (state.openFacetKey && target instanceof Element && !target.closest("#miniV2FacetShell")) {
+        state.openFacetKey = "";
+        renderFacetBar();
+        renderFacetFlyout();
       }
       if (state.detailPointerDownInside) {
         state.detailPointerDownInside = false;
@@ -755,7 +975,7 @@
     function isDetailPersistentClickTarget(target) {
       if (!target || !(target instanceof Element)) return false;
       if (target.closest("#miniV2DetailPanel")) return true;
-      if (target.closest("#miniV2FiltersShell")) return true;
+      if (target.closest("#miniV2FacetShell")) return true;
       if (target.closest("tr[data-group-id]")) return true;
       if (target.closest(".mini-v2-top-card :is(button, input, select, textarea, a, label, [data-action])")) return true;
       if (target.closest(".mini-v2-controls :is(button, input, select, textarea, a, label, [data-action])")) return true;
@@ -822,8 +1042,9 @@
       }
     }
 
-    function getFilteredGroups() {
+    function getFilteredGroups(filterStateOverride) {
       const search = state.search.trim().toLowerCase();
+      const filterState = filterStateOverride || state.filtersApplied;
 
       return state.groups.filter(group => {
         if (search && !group.searchText.includes(search)) return false;
@@ -837,8 +1058,33 @@
           if (!matchesLocation) return false;
         }
 
+        if (!matchesStructuredFilters(group, filterState)) return false;
+
         return true;
       });
+    }
+
+    function matchesStructuredFilters(group, filterState) {
+      if (filterState.sizes.length && !filterState.sizes.includes(group.size || "n/a")) return false;
+      if (filterState.creatureTypes.length && !filterState.creatureTypes.includes(group.creatureType || "n/a")) return false;
+      if (filterState.roles.length && !filterState.roles.includes(group.role || "n/a")) return false;
+      if (filterState.sexes.length && !filterState.sexes.includes(group.sex || "n/a")) return false;
+      if (filterState.races.length && !filterState.races.includes(group.race || "n/a")) return false;
+      if (filterState.paintedOnly && !group.paint) return false;
+      if (filterState.needsStickersOnly && !group.needsStickers) return false;
+      return true;
+    }
+
+    function createEmptyFilterState() {
+      return {
+        sizes: [],
+        creatureTypes: [],
+        roles: [],
+        sexes: [],
+        races: [],
+        paintedOnly: false,
+        needsStickersOnly: false
+      };
     }
 
     function getSelectedGroup() {
