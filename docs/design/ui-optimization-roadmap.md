@@ -331,6 +331,112 @@ This future system should be designed so:
 - active filters remain understandable at a glance
 - filter UI collapses gracefully when the inspector opens
 
+### V1 Filter Model
+
+Recommended always-visible controls:
+
+- search input
+- location searchable single-select
+- `Filters` button
+- `Clear Filters` button
+- applied-filter chips row shown only when filters are active
+
+Recommended search placeholder:
+
+`Search name, sticker, note, or tag...`
+
+Recommended location control:
+
+- searchable single-select combobox
+- one selected value only
+- clearable
+- do not support multi-select locations in V1
+
+Why single-select location in V1:
+
+- location is a high-frequency narrowing filter
+- one location at a time is the dominant use case
+- multi-select location would bloat the chip row and complicate the control too early
+
+### V1 Filter Flyout
+
+The filter UI should be an anchored flyout or popover, not a full modal.
+
+Suggested shell:
+
+- width around `440px`
+- max height around `72vh`
+- internal vertical scroll
+- radius `12px`
+- pale panel background
+- border `1px solid #C7D5E5`
+- medium soft shadow
+- padding `16px`
+
+Header content:
+
+- title: `Filters`
+- short helper copy
+- `Clear all` action
+
+Footer content:
+
+- match count text
+- `Cancel`
+- `Apply Filters`
+
+### V1 Filter Categories
+
+Recommended V1 set:
+
+- Size -> pill multi-select
+- Creature Type -> checkbox grid
+- Role -> pill multi-select
+- Race -> searchable checkbox list
+- Sex -> pill multi-select
+- Collection/Admin -> checkboxes for:
+  - painted only
+  - needs stickers only
+
+Recommended V1 omissions:
+
+- set
+- set number
+- status buckets as primary filters
+- multi-select locations
+
+### Filter Logic
+
+Within a single category:
+
+- use OR logic
+
+Across categories:
+
+- use AND logic
+
+Example:
+
+- `Size = Medium + Large`
+- `Role = Melee`
+- `Race = Elf + Human`
+
+means:
+
+- any medium or large mini
+- that is melee
+- and is elf or human
+
+### Applied Filter Chips
+
+After filters are applied:
+
+- show removable chips below the main control row
+- label them clearly, e.g. `Race: Elf`
+- when space gets tight, truncate the visible chip list and show an overflow label such as `+ 3 more`
+
+The chip row should describe active filters, not duplicate the control set permanently.
+
 ### Browser Table
 
 Recommended column order:
@@ -420,6 +526,70 @@ Why fourth:
 
 - the current quick filters are conceptually weak and compress badly
 - the left side should become a real finder before we keep polishing the table below it
+
+Implementation note:
+
+- treat `4.1` through `4.3` as Pass 1 scaffolding
+- treat `4.4` through `4.7` as Pass 2 behavior, chip rendering, and cleanup
+
+#### 4.1 Replace The Current Quick-Filter Row
+
+Deliverables:
+
+- remove the permanent status-bucket chip strip from the always-visible layout
+- keep the left control row focused on search, location, filters, and clear
+
+#### 4.2 Convert Location To A Searchable Single-Select
+
+Deliverables:
+
+- searchable combobox behavior
+- clearable single selected location
+- no multi-select location in V1
+
+#### 4.3 Build The Anchored Filter Flyout Shell
+
+Deliverables:
+
+- `Filters` button
+- anchored flyout/popup shell
+- header with `Clear all`
+- footer with `Cancel` / `Apply Filters`
+
+#### 4.4 Add The First V1 Filter Groups
+
+Deliverables:
+
+- Size pills
+- Creature Type checkbox grid
+- Role pills
+- Race searchable checkbox list
+- Sex pills
+- Collection/Admin checkboxes
+
+#### 4.5 Add Filter Logic And Match Count
+
+Deliverables:
+
+- OR logic within categories
+- AND logic across categories
+- visible match count in the flyout footer
+
+#### 4.6 Render Applied Filter Chips
+
+Deliverables:
+
+- chips appear only when filters are active
+- chips are removable
+- overflow behavior such as `+ N more`
+
+#### 4.7 Final Step-4 Cleanup
+
+Deliverables:
+
+- remove any remaining dependency on the old status-bucket mental model
+- make sure the search bar remains dominant when the inspector opens
+- confirm the filter system still compresses gracefully at tighter widths
 
 ### 5. Left Results Table
 
@@ -562,7 +732,7 @@ Recommended first three UI-focused commits:
 
 1. design tokens + flatten major gradients
 2. left search/filter row cleanup
-3. replace quick filters with a real applied-filter model
+3. begin the phased real-filter model (`4.1` onward)
 
 ## Working Method For GPT Iteration
 

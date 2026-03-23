@@ -6,8 +6,9 @@
       groups: INITIAL_STATE.groups.map(enrichGroup),
       locations: INITIAL_STATE.locations.slice(),
       search: "",
-      availabilityFilter: "all",
       locationFilter: "all",
+      locationMenuOpen: false,
+      locationMenuSearch: "",
       selectedRootId: "",
       draftLocations: {},
       detailPointerDownInside: false
@@ -17,9 +18,14 @@
     let workspaceNode;
     let summaryLaneNode;
     let listHeaderNoteNode;
-    let filterButtonsNode;
     let searchInputNode;
-    let locationFilterNode;
+    let locationComboboxNode;
+    let locationTriggerNode;
+    let locationLabelNode;
+    let locationClearNode;
+    let locationPopoverNode;
+    let locationSearchNode;
+    let locationOptionsNode;
     let listStageNode;
     let tableScrollNode;
     let detailPanelNode;
@@ -36,7 +42,7 @@
     function initMiniV2() {
       buildShell();
       bindNodes();
-      renderLocationOptions();
+      renderLocationFilter();
       renderAll();
       bindEvents();
       window.addEventListener("resize", syncDesktopLayoutMetrics);
@@ -65,16 +71,42 @@
                   <div class="mini-v2-controls">
                     <div class="mini-v2-search-row">
                       <div class="mini-v2-field">
-                        <input id="miniV2SearchInput" type="search" placeholder="Search by name, sticker, or location...">
+                        <input id="miniV2SearchInput" type="search" placeholder="Search name, sticker, note, or location...">
                       </div>
                       <div class="mini-v2-field">
-                        <select id="miniV2LocationFilter"></select>
+                        <div id="miniV2LocationCombobox" class="mini-v2-combobox">
+                          <button
+                            id="miniV2LocationTrigger"
+                            class="mini-v2-combobox-trigger"
+                            type="button"
+                            data-action="toggle-location-menu"
+                            aria-haspopup="listbox"
+                            aria-expanded="false"
+                            aria-controls="miniV2LocationPopover"
+                          >
+                            <span id="miniV2LocationLabel" class="mini-v2-combobox-label">All locations</span>
+                            <span class="mini-v2-combobox-caret" aria-hidden="true">▾</span>
+                          </button>
+                          <button
+                            id="miniV2LocationClear"
+                            class="mini-v2-combobox-clear"
+                            type="button"
+                            data-action="clear-location"
+                            aria-label="Clear location filter"
+                            hidden
+                          >
+                            ×
+                          </button>
+                          <div id="miniV2LocationPopover" class="mini-v2-combobox-popover" hidden>
+                            <div class="mini-v2-combobox-search-wrap">
+                              <input id="miniV2LocationSearch" class="mini-v2-combobox-search" type="search" placeholder="Search locations...">
+                            </div>
+                            <div id="miniV2LocationOptions" class="mini-v2-combobox-options" role="listbox" aria-label="Locations"></div>
+                          </div>
+                        </div>
                       </div>
-                      <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear Filters</button>
-                    </div>
-                    <div class="mini-v2-filter-row">
-                      <div class="mini-v2-quick-filter-label">Quick Filters</div>
-                      <div id="miniV2FilterButtons" class="mini-v2-list-filters" role="group" aria-label="Mini list filters"></div>
+                      <button class="button mini-v2-action-btn mini-v2-secondary" type="button" data-action="open-filters" disabled title="Filter flyout arrives in the next step.">Filters</button>
+                      <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear</button>
                     </div>
                   </div>
                   <div id="miniV2TableScroll" class="mini-v2-table-scroll"></div>
@@ -111,9 +143,16 @@
       workspaceNode = root.querySelector(".mini-v2-workspace");
       summaryLaneNode = document.getElementById("miniV2SummaryLane");
       listHeaderNoteNode = document.getElementById("miniV2ListHeaderNote");
-      filterButtonsNode = document.getElementById("miniV2FilterButtons");
       searchInputNode = document.getElementById("miniV2SearchInput");
-      locationFilterNode = document.getElementById("miniV2LocationFilter");
+      locationComboboxNode = document.getElementById("miniV2LocationCombobox");
+      locationTriggerNode = document.getElementById("miniV2LocationTrigger");
+      locationLabelNode = document.getElementById("miniV2LocationLabel");
+      locationClearNode = document.getElementById("miniV2LocationClear");
+      locationPopoverNode = document.getElementById("miniV2LocationPopover");
+      locationSearchNode = document.getElementById("miniV2LocationSearch");
+      locationOptionsNode = document.getElementById("miniV2LocationOptions");
+      locationTriggerNode.querySelector(".mini-v2-combobox-caret").textContent = "";
+      locationClearNode.textContent = "x";
       listStageNode = document.getElementById("miniV2ListStage");
       tableScrollNode = document.getElementById("miniV2TableScroll");
       detailPanelNode = document.getElementById("miniV2DetailPanel");
@@ -167,8 +206,7 @@
       root.classList.toggle("mini-v2-has-detail", !!selectedGroup);
       renderSummaryLane();
       renderListHeader();
-      renderFilterButtons();
-      renderLocationOptions();
+      renderLocationFilter();
       renderTable();
       renderDetail();
       requestAnimationFrame(syncDesktopLayoutMetrics);
@@ -200,39 +238,48 @@
         : `${filtered.length} miniatures shown`;
     }
 
-    function renderFilterButtons() {
-      const counts = getAvailabilityCounts();
-      const filters = [
-        { key: "all", label: `All (${state.groups.length})` },
-        { key: "ready", label: `Ready (${counts.ready})` },
-        { key: "partial", label: `Partial (${counts.partial})` },
-        { key: "checkedOut", label: `Checked Out (${counts.checkedOut})` },
-        { key: "needsStickers", label: `Needs Stickers (${counts.needsStickers})` }
-      ];
+    function renderLocationFilter() {
+      searchInputNode.value = state.search;
+      locationComboboxNode.classList.toggle("is-clearable", state.locationFilter !== "all");
+      locationComboboxNode.classList.toggle("is-open", state.locationMenuOpen);
+      locationLabelNode.textContent = state.locationFilter === "all" ? "All locations" : state.locationFilter;
+      locationTriggerNode.setAttribute("aria-expanded", state.locationMenuOpen ? "true" : "false");
+      locationTriggerNode.classList.toggle("is-active", state.locationFilter !== "all");
+      locationTriggerNode.classList.toggle("is-open", state.locationMenuOpen);
+      locationClearNode.hidden = state.locationFilter === "all";
+      locationPopoverNode.hidden = !state.locationMenuOpen;
+      locationSearchNode.value = state.locationMenuSearch;
 
-      filterButtonsNode.innerHTML = filters.map(filter => `
-        <button
-          class="mini-v2-list-filter-btn ${state.availabilityFilter === filter.key ? "is-active" : ""}"
-          type="button"
-          data-action="set-filter"
-          data-filter="${filter.key}"
-        >
-          <span class="mini-v2-list-filter-label">${escapeHtml(filter.label)}</span>
-        </button>
-      `).join("");
-    }
+      const query = state.locationMenuSearch.trim().toLowerCase();
+      const matchingLocations = state.locations.filter(location => location.toLowerCase().includes(query));
+      const options = [
+        {
+          value: "all",
+          label: "All locations"
+        }
+      ].concat(matchingLocations.map(location => ({
+        value: location,
+        label: location
+      })));
 
-    function renderLocationOptions() {
-      const options = [`<option value="all">All locations</option>`]
-        .concat(state.locations.map(location => `<option value="${escapeHtml(location)}">${escapeHtml(location)}</option>`))
-        .join("");
-
-      if (locationFilterNode.innerHTML !== options) {
-        locationFilterNode.innerHTML = options;
+      if (!options.length) {
+        locationOptionsNode.innerHTML = `<div class="mini-v2-combobox-empty">No locations found.</div>`;
+        return;
       }
 
-      locationFilterNode.value = state.locationFilter;
-      searchInputNode.value = state.search;
+      locationOptionsNode.innerHTML = options.map(option => `
+        <button
+          class="mini-v2-combobox-option ${state.locationFilter === option.value ? "is-selected" : ""}"
+          type="button"
+          role="option"
+          aria-selected="${state.locationFilter === option.value ? "true" : "false"}"
+          data-action="set-location-filter"
+          data-location-value="${escapeHtml(option.value)}"
+        >
+          <span class="mini-v2-combobox-option-label">${escapeHtml(option.label)}</span>
+          ${state.locationFilter === option.value ? '<span class="mini-v2-combobox-option-check" aria-hidden="true">✓</span>' : ""}
+        </button>
+      `).join("");
     }
 
     function renderTable() {
@@ -414,21 +461,60 @@
     }
 
     function handleRootClick(event) {
+      const clickTarget = event.target instanceof Element ? event.target : null;
+      const clickedInsideLocationCombobox = !!(clickTarget && clickTarget.closest("#miniV2LocationCombobox"));
+
+      if (state.locationMenuOpen && !clickedInsideLocationCombobox) {
+        state.locationMenuOpen = false;
+        state.locationMenuSearch = "";
+      }
+
       const actionButton = event.target.closest("button[data-action]");
       if (actionButton && root.contains(actionButton)) {
         event.stopPropagation();
         const action = actionButton.getAttribute("data-action");
 
-        if (action === "set-filter") {
-          state.availabilityFilter = actionButton.getAttribute("data-filter") || "all";
+        if (action === "open-filters") {
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "toggle-location-menu") {
+          state.locationMenuOpen = !state.locationMenuOpen;
+          if (!state.locationMenuOpen) {
+            state.locationMenuSearch = "";
+          }
+          renderLocationFilter();
+          if (state.locationMenuOpen) {
+            requestAnimationFrame(() => {
+              locationSearchNode.focus();
+              locationSearchNode.select();
+            });
+          }
+          return;
+        }
+
+        if (action === "clear-location") {
+          state.locationFilter = "all";
+          state.locationMenuSearch = "";
+          state.locationMenuOpen = false;
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "set-location-filter") {
+          state.locationFilter = actionButton.getAttribute("data-location-value") || "all";
+          state.locationMenuSearch = "";
+          state.locationMenuOpen = false;
           renderAllPreservingScroll();
           return;
         }
 
         if (action === "clear-filters") {
           state.search = "";
-          state.availabilityFilter = "all";
           state.locationFilter = "all";
+          state.locationMenuSearch = "";
+          state.locationMenuOpen = false;
           renderAllPreservingScroll();
           return;
         }
@@ -475,16 +561,16 @@
       if (event.target === searchInputNode) {
         state.search = searchInputNode.value;
         renderAllPreservingScroll();
+        return;
+      }
+
+      if (event.target === locationSearchNode) {
+        state.locationMenuSearch = locationSearchNode.value;
+        renderLocationFilter();
       }
     }
 
     function handleRootChange(event) {
-      if (event.target === locationFilterNode) {
-        state.locationFilter = locationFilterNode.value;
-        renderAllPreservingScroll();
-        return;
-      }
-
       const copySelect = event.target.closest("select[data-copy-id]");
       if (copySelect) {
         const group = getSelectedGroup();
@@ -503,6 +589,25 @@
     }
 
     function handleRootKeydown(event) {
+      if (event.key === "Escape" && state.locationMenuOpen) {
+        state.locationMenuOpen = false;
+        state.locationMenuSearch = "";
+        renderLocationFilter();
+        locationTriggerNode.focus();
+        return;
+      }
+
+      if (event.target === locationTriggerNode && (event.key === "Enter" || event.key === " " || event.key === "ArrowDown")) {
+        event.preventDefault();
+        state.locationMenuOpen = true;
+        renderLocationFilter();
+        requestAnimationFrame(() => {
+          locationSearchNode.focus();
+          locationSearchNode.select();
+        });
+        return;
+      }
+
       const row = event.target.closest("tr[data-group-id]");
       if (!row) return;
       if (event.key === "Enter" || event.key === " ") {
@@ -513,6 +618,11 @@
 
     function handleDocumentClick(event) {
       const target = event && event.target;
+      if (state.locationMenuOpen && target instanceof Element && !target.closest("#miniV2LocationCombobox")) {
+        state.locationMenuOpen = false;
+        state.locationMenuSearch = "";
+        renderLocationFilter();
+      }
       if (state.detailPointerDownInside) {
         state.detailPointerDownInside = false;
         return;
@@ -601,7 +711,6 @@
 
       return state.groups.filter(group => {
         if (search && !group.searchText.includes(search)) return false;
-        if (!matchesAvailabilityFilter(group)) return false;
 
         if (state.locationFilter !== "all") {
           const matchesLocation = group.home === state.locationFilter
@@ -614,30 +723,6 @@
 
         return true;
       });
-    }
-
-    function matchesAvailabilityFilter(group) {
-      if (state.availabilityFilter === "ready") {
-        return group.available === group.total;
-      }
-      if (state.availabilityFilter === "partial") {
-        return group.available > 0 && group.available < group.total;
-      }
-      if (state.availabilityFilter === "checkedOut") {
-        return group.available === 0;
-      }
-      if (state.availabilityFilter === "needsStickers") {
-        return group.needsStickers;
-      }
-      return true;
-    }
-
-    function getAvailabilityCounts() {
-      return state.groups.reduce((counts, group) => {
-        counts[getStatusKey(group)] += 1;
-        if (group.needsStickers) counts.needsStickers += 1;
-        return counts;
-      }, { ready: 0, partial: 0, checkedOut: 0, needsStickers: 0 });
     }
 
     function getSelectedGroup() {
