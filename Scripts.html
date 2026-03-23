@@ -62,8 +62,7 @@
                   <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note"></span>
                 </div>
                 <div class="v2-card-body mini-v2-table-body">
-                  <div class="mini-v2-filter-row">
-                    <div id="miniV2FilterButtons" class="mini-v2-list-filters" role="group" aria-label="Mini list filters"></div>
+                  <div class="mini-v2-controls">
                     <div class="mini-v2-search-row">
                       <div class="mini-v2-field">
                         <input id="miniV2SearchInput" type="search" placeholder="Search by name, sticker, or location...">
@@ -72,6 +71,10 @@
                         <select id="miniV2LocationFilter"></select>
                       </div>
                       <button class="button mini-v2-action-btn" type="button" data-action="clear-filters">Clear Filters</button>
+                    </div>
+                    <div class="mini-v2-filter-row">
+                      <div class="mini-v2-quick-filter-label">Quick Filters</div>
+                      <div id="miniV2FilterButtons" class="mini-v2-list-filters" role="group" aria-label="Mini list filters"></div>
                     </div>
                   </div>
                   <div id="miniV2TableScroll" class="mini-v2-table-scroll"></div>
@@ -529,7 +532,7 @@
       if (target.closest("#miniV2DetailPanel")) return true;
       if (target.closest("tr[data-group-id]")) return true;
       if (target.closest(".mini-v2-top-card :is(button, input, select, textarea, a, label, [data-action])")) return true;
-      if (target.closest(".mini-v2-filter-row :is(button, input, select, textarea, a, label, [data-action])")) return true;
+      if (target.closest(".mini-v2-controls :is(button, input, select, textarea, a, label, [data-action])")) return true;
       return false;
     }
 
