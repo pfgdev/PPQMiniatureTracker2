@@ -652,6 +652,16 @@ Deliverables:
 - hover state
 - availability badges
 - text hierarchy
+- final browse-table column tuning against real data
+
+Current note:
+
+- the trailing metadata columns (`Size`, `Type`, `Race`, `Sex`, `Role`) are intentionally provisional
+- once real data is loaded, revisit their exact widths
+- likely priority to test:
+  - give `Type` and `Race` more room than `Sex`
+  - confirm whether `Role` should stay independent or visually pair with another trailing field
+  - preserve a stable clip line in compact/open state after `Home`
 
 Why fifth:
 

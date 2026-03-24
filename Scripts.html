@@ -93,6 +93,7 @@
     let detailContentNode;
     let facetHideTimer = null;
     let facetSwapTimer = null;
+    let detailWidthSyncTimer = null;
 
     initMiniV2();
 
@@ -101,6 +102,7 @@
       bindNodes();
       renderLocationFilter();
       renderAll();
+      syncDesktopLayoutMetrics(true);
       bindEvents();
       window.addEventListener("resize", syncDesktopLayoutMetrics);
       new ResizeObserver(syncDesktopLayoutMetrics).observe(root);
@@ -251,6 +253,7 @@
       root.addEventListener("change", handleRootChange);
       root.addEventListener("keydown", handleRootKeydown);
       facetPopoverNode.addEventListener("transitionend", handleFacetPopoverTransitionEnd);
+      detailPanelNode.addEventListener("transitionend", handleDetailPanelTransitionEnd);
       document.addEventListener("click", handleDocumentClick);
       document.addEventListener("pointerdown", handleDocumentPointerDown, true);
     }
@@ -292,7 +295,6 @@
       renderFacetFlyout();
       renderTable();
       renderDetail();
-      requestAnimationFrame(syncDesktopLayoutMetrics);
     }
 
     function renderAllPreservingScroll(existingState) {
@@ -627,11 +629,14 @@
         const status = getStatusKey(group);
         return `
           <tr class="mini-v2-row ${group.rootId === state.selectedRootId ? "is-selected" : ""}" data-group-id="${escapeHtml(group.rootId)}" tabindex="0">
-            <td><span class="mini-v2-count ${statusClass(status)}">${group.available}</span></td>
-            <td><div class="mini-v2-name">${escapeHtml(group.name)}</div></td>
-            <td>${escapeHtml(group.home)}</td>
-            <td>${escapeHtml(group.size)}</td>
-            <td>${escapeHtml(group.creatureType)}</td>
+            <td class="mini-v2-cell mini-v2-cell-avail"><span class="mini-v2-count ${statusClass(status)}">${group.available}</span></td>
+            <td class="mini-v2-cell mini-v2-cell-name"><div class="mini-v2-name" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</div></td>
+            <td class="mini-v2-cell mini-v2-cell-home" title="${escapeHtml(group.home)}">${escapeHtml(group.home)}</td>
+            <td class="mini-v2-cell mini-v2-cell-size" title="${escapeHtml(group.size)}">${escapeHtml(group.size)}</td>
+            <td class="mini-v2-cell mini-v2-cell-type" title="${escapeHtml(group.creatureType)}">${escapeHtml(group.creatureType)}</td>
+            <td class="mini-v2-cell mini-v2-cell-race" title="${escapeHtml(group.race || "n/a")}">${escapeHtml(group.race || "n/a")}</td>
+            <td class="mini-v2-cell mini-v2-cell-sex" title="${escapeHtml(group.sex || "n/a")}">${escapeHtml(group.sex || "n/a")}</td>
+            <td class="mini-v2-cell mini-v2-cell-role" title="${escapeHtml(group.role || "n/a")}">${escapeHtml(group.role || "n/a")}</td>
           </tr>
         `;
       }).join("");
@@ -641,11 +646,14 @@
           <table class="mini-v2-table mini-v2-browse-table" aria-label="Miniature inventory">
             <thead>
               <tr>
-                <th>Avail</th>
-                <th>Name</th>
-                <th>Home</th>
-                <th>Size</th>
-                <th>Type</th>
+                <th class="mini-v2-cell-avail">Avail</th>
+                <th class="mini-v2-cell-name">Name</th>
+                <th class="mini-v2-cell-home">Home</th>
+                <th class="mini-v2-cell-size">Size</th>
+                <th class="mini-v2-cell-type">Type</th>
+                <th class="mini-v2-cell-race">Race</th>
+                <th class="mini-v2-cell-sex">Sex</th>
+                <th class="mini-v2-cell-role">Role</th>
               </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -1081,22 +1089,39 @@
       return document.scrollingElement || document.documentElement || document.body;
     }
 
-    function syncDesktopLayoutMetrics() {
+    function syncDesktopLayoutMetrics(force) {
       if (!desktopMq.matches) {
-        root.style.removeProperty("--mini-v2-list-lock-width");
+        root.style.removeProperty("--mini-v2-browse-table-width");
         return;
       }
 
-      const workspaceWidth = workspaceNode ? workspaceNode.getBoundingClientRect().width : 0;
-      const workspaceStyles = workspaceNode ? window.getComputedStyle(workspaceNode) : null;
-      const workspaceGap = workspaceStyles
-        ? parseFloat(workspaceStyles.columnGap || workspaceStyles.gap || "0") || 0
-        : 0;
-      const hasDetail = root.classList.contains("mini-v2-has-detail");
-      const lockWidth = hasDetail ? Math.max(0, workspaceWidth - workspaceGap) : workspaceWidth;
-      if (workspaceWidth > 0) {
-        root.style.setProperty("--mini-v2-list-lock-width", `${Math.round(lockWidth)}px`);
+      if (!force && root.classList.contains("mini-v2-has-detail")) {
+        return;
       }
+
+      const listWrap = tableScrollNode ? tableScrollNode.querySelector(".mini-v2-list-wrap") : null;
+      if (!listWrap) return;
+
+      const width = Math.round(listWrap.getBoundingClientRect().width);
+      if (width > 0) {
+        root.style.setProperty("--mini-v2-browse-table-width", `${width}px`);
+      }
+    }
+
+    function handleDetailPanelTransitionEnd(event) {
+      if (!desktopMq.matches) return;
+      if (!event || event.target !== detailPanelNode) return;
+      if (!["width", "max-width", "flex-basis", "transform"].includes(event.propertyName)) return;
+      if (root.classList.contains("mini-v2-has-detail")) return;
+
+      if (detailWidthSyncTimer) {
+        clearTimeout(detailWidthSyncTimer);
+      }
+
+      detailWidthSyncTimer = setTimeout(function () {
+        syncDesktopLayoutMetrics(true);
+        detailWidthSyncTimer = null;
+      }, 0);
     }
 
     function getFilteredGroups(filterStateOverride) {
