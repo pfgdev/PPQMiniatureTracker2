@@ -629,7 +629,9 @@
         const status = getStatusKey(group);
         return `
           <tr class="mini-v2-row ${group.rootId === state.selectedRootId ? "is-selected" : ""}" data-group-id="${escapeHtml(group.rootId)}" tabindex="0">
-            <td class="mini-v2-cell mini-v2-cell-avail"><span class="mini-v2-count ${statusClass(status)}">${group.available}</span></td>
+            <td class="mini-v2-cell mini-v2-cell-avail">
+              <span class="mini-v2-count mini-v2-count--browse ${statusClass(status)}" title="${group.available} of ${group.total} available">${group.available}/${group.total}</span>
+            </td>
             <td class="mini-v2-cell mini-v2-cell-name"><div class="mini-v2-name" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</div></td>
             <td class="mini-v2-cell mini-v2-cell-home" title="${escapeHtml(group.home)}">${escapeHtml(group.home)}</td>
             <td class="mini-v2-cell mini-v2-cell-size" title="${escapeHtml(group.size)}">${escapeHtml(group.size)}</td>

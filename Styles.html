@@ -122,7 +122,7 @@
     --mini-v2-scroll-detail-offset: 0px;
     --mini-v2-scroll-list-max: calc(var(--mini-v2-scroll-base) + var(--mini-v2-scroll-list-offset));
     --mini-v2-scroll-detail-max: calc(var(--mini-v2-scroll-base) + var(--mini-v2-scroll-detail-offset));
-    --mini-v2-detail-panel-width: clamp(620px, 72vw, 760px);
+    --mini-v2-detail-panel-width: clamp(560px, 66vw, 700px);
     max-width: var(--ppq-shell-max-width);
     height: 100%;
     min-height: 0;
@@ -960,7 +960,7 @@
   .mini-v2-table th,
   .mini-v2-table td {
     border-bottom: 1px solid #e2e9f5;
-    padding: 6px 7px;
+    padding: 5px 7px;
     text-align: left;
     vertical-align: middle;
   }
@@ -1059,14 +1059,52 @@
     color: var(--mini-v2-danger-ink);
   }
 
+  .mini-v2-browse-table .mini-v2-count--browse {
+    min-width: 38px;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 1;
+  }
+
   .mini-v2-browse-table th.mini-v2-cell-avail { width: 6%; }
-  .mini-v2-browse-table th.mini-v2-cell-name { width: 24%; }
-  .mini-v2-browse-table th.mini-v2-cell-home { width: 20%; }
-  .mini-v2-browse-table th.mini-v2-cell-size { width: 10%; }
-  .mini-v2-browse-table th.mini-v2-cell-type { width: 10%; }
-  .mini-v2-browse-table th.mini-v2-cell-race { width: 10%; }
-  .mini-v2-browse-table th.mini-v2-cell-sex { width: 10%; }
-  .mini-v2-browse-table th.mini-v2-cell-role { width: 10%; }
+  .mini-v2-browse-table th.mini-v2-cell-name { width: 22%; }
+  .mini-v2-browse-table th.mini-v2-cell-home { width: 21%; }
+  .mini-v2-browse-table th.mini-v2-cell-size { width: 16%; }
+  .mini-v2-browse-table th.mini-v2-cell-type { width: 8.5%; }
+  .mini-v2-browse-table th.mini-v2-cell-race { width: 12.5%; }
+  .mini-v2-browse-table th.mini-v2-cell-sex { width: 7%; }
+  .mini-v2-browse-table th.mini-v2-cell-role { width: 7%; }
+
+  .mini-v2-browse-table th.mini-v2-cell-size,
+  .mini-v2-browse-table td.mini-v2-cell-size {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .mini-v2-browse-table th.mini-v2-cell-type,
+  .mini-v2-browse-table td.mini-v2-cell-type {
+    padding-left: 6px;
+    padding-right: 4px;
+  }
+
+  .mini-v2-browse-table th.mini-v2-cell-race,
+  .mini-v2-browse-table td.mini-v2-cell-race {
+    padding-left: 4px;
+    padding-right: 14px;
+  }
+
+  .mini-v2-browse-table th.mini-v2-cell-sex,
+  .mini-v2-browse-table td.mini-v2-cell-sex {
+    padding-left: 12px;
+    padding-right: 4px;
+  }
+
+  .mini-v2-browse-table th.mini-v2-cell-role,
+  .mini-v2-browse-table td.mini-v2-cell-role {
+    padding-left: 4px;
+  }
 
   .mini-v2-browse-table th:first-child,
   .mini-v2-browse-table td:first-child {
@@ -1398,7 +1436,7 @@
 
   @media (min-width: 1280px) {
     .mini-v2 {
-      --mini-v2-detail-panel-width: 56%;
+      --mini-v2-detail-panel-width: 52%;
     }
   }
 

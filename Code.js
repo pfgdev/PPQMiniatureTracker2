@@ -160,6 +160,22 @@ function buildMockAppState_() {
       notes: "Lost a fight with a bucket of paint.",
       stickers: ["F34"],
       currentLocations: ["Female Humans"]
+    }),
+    createMockGroup_({
+      rootId: "201-WARHOR",
+      name: "Warhorse",
+      home: "Mounts & Misc. Creatures",
+      size: "Large",
+      creatureType: "Beast",
+      sex: "n/a",
+      race: "n/a",
+      role: "Other",
+      paint: true,
+      set: "n/a",
+      setNumber: "",
+      notes: "Placeholder entry to stress-test the longest drawer name in the browser table.",
+      stickers: ["M07"],
+      currentLocations: ["Mounts & Misc. Creatures"]
     })
   ];
 
@@ -173,6 +189,7 @@ function buildMockAppState_() {
       "Dwarves",
       "Elves",
       "Drow",
+      "Mounts & Misc. Creatures",
       "Encounter Box C",
       "Encounter Box G",
       "Quest Minis",
