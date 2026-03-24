@@ -681,11 +681,18 @@
       }
 
       const dirtyCount = group.copies.filter(isDirty).length;
+      const missingFieldLabels = getMissingFieldLabels(group);
+      const missingFieldCount = missingFieldLabels.length;
       detailHeaderTitleNode.textContent = group.name;
       detailHeaderTagsNode.innerHTML = [
-        renderDetailTag(getStatusLabel(group), statusClass(getStatusKey(group))),
-        dirtyCount ? renderDetailTag(`Unsaved ${dirtyCount}`, "is-warn") : "",
-        group.needsStickers ? renderDetailTag("Sticker Work", "is-warn") : ""
+        missingFieldCount
+          ? renderDetailTag(
+            `${missingFieldCount} missing field${missingFieldCount === 1 ? "" : "s"}`,
+            "is-danger",
+            `Missing: ${missingFieldLabels.join(", ")}`
+          )
+          : renderDetailTag("Ready", "is-success"),
+        dirtyCount ? renderDetailTag(`Unsaved ${dirtyCount}`, "is-warn") : ""
       ].join("");
       detailCloseButtonNode.disabled = false;
       detailEmptyNode.hidden = true;
@@ -750,8 +757,8 @@
       return `<span class="mini-v2-badge ${statusClass(status)}">${escapeHtml(getStatusLabel(group))}</span>`;
     }
 
-    function renderDetailTag(label, className) {
-      return `<span class="mini-v2-detail-tag ${className}">${escapeHtml(label)}</span>`;
+    function renderDetailTag(label, className, titleText) {
+      return `<span class="mini-v2-detail-tag ${className}"${titleText ? ` title="${escapeHtml(titleText)}"` : ""}>${escapeHtml(label)}</span>`;
     }
 
     function renderStatCard(label, valueMarkup) {
@@ -1365,6 +1372,30 @@
       group.copies.forEach(copy => {
         delete state.draftLocations[copy.id];
       });
+    }
+
+    function getMissingFieldLabels(group) {
+      const candidates = [
+        { label: "Name", value: group.name },
+        { label: "Home", value: group.home },
+        { label: "Size", value: group.size },
+        { label: "Creature Type", value: group.creatureType },
+        { label: "Sex", value: group.sex },
+        { label: "Race", value: group.race },
+        { label: "Role", value: group.role },
+        { label: "Paint", value: typeof group.paint === "boolean" ? String(group.paint) : "" },
+        { label: "Set", value: group.set },
+        { label: "Set #", value: group.setNumber },
+        { label: "Notes", value: group.notes }
+      ];
+
+      return candidates
+        .filter(candidate => !hasMeaningfulValue(candidate.value))
+        .map(candidate => candidate.label);
+    }
+
+    function hasMeaningfulValue(value) {
+      return value !== null && value !== undefined && String(value).trim() !== "";
     }
 
     function getStatusKey(group) {

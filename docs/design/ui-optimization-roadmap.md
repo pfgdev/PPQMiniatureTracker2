@@ -767,6 +767,19 @@ Why last:
 
 - these are secondary workflows and should not derail the main browser/inspector experience
 
+### 14. Header System Pass
+
+Deliverables:
+
+- revisit the app header, browse header, and detail header together as one visual system
+- tune header contrast, hierarchy, and differentiation holistically instead of in isolation
+- evaluate future inline-edit affordances in the current detail-header action slot
+- likely review this pass with the UX design agent before implementation
+
+Why later:
+
+- header styling should respond to the broader layout once the surrounding structure is more settled
+
 ## High-Confidence Recommendations
 
 These should be treated as strong direction:
