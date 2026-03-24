@@ -50,13 +50,17 @@
     };
 
     const state = {
-      groups: INITIAL_STATE.groups.map(enrichGroup),
+      groups: INITIAL_STATE.groups.map((group, index) => enrichGroup({ ...group, originalOrder: index })),
       locations: INITIAL_STATE.locations.slice(),
       search: "",
       locationFilter: "all",
       locationMenuOpen: false,
       locationMenuSearch: "",
       filtersApplied: createEmptyFilterState(),
+      sort: {
+        key: "",
+        direction: ""
+      },
       openFacetKey: "",
       selectedRootId: "",
       draftLocations: {},
@@ -648,14 +652,14 @@
           <table class="mini-v2-table mini-v2-browse-table" aria-label="Miniature inventory">
             <thead>
               <tr>
-                <th class="mini-v2-cell-avail">Avail</th>
-                <th class="mini-v2-cell-name">Name</th>
-                <th class="mini-v2-cell-home">Home</th>
-                <th class="mini-v2-cell-size">Size</th>
-                <th class="mini-v2-cell-type">Type</th>
-                <th class="mini-v2-cell-race">Race</th>
-                <th class="mini-v2-cell-sex">Sex</th>
-                <th class="mini-v2-cell-role">Role</th>
+                ${renderSortHeader("mini-v2-cell-avail", "avail", "#", "Available")}
+                ${renderSortHeader("mini-v2-cell-name", "name", "Name")}
+                ${renderSortHeader("mini-v2-cell-home", "home", "Home")}
+                ${renderSortHeader("mini-v2-cell-size", "size", "Size")}
+                ${renderSortHeader("mini-v2-cell-type", "type", "Type")}
+                ${renderSortHeader("mini-v2-cell-race", "race", "Race")}
+                ${renderSortHeader("mini-v2-cell-sex", "sex", "Sex")}
+                ${renderSortHeader("mini-v2-cell-role", "role", "Role")}
               </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -799,6 +803,29 @@
         .join("");
     }
 
+    function renderSortHeader(cellClassName, sortKey, visibleLabel, spokenLabel) {
+      const isActive = state.sort.key === sortKey && !!state.sort.direction;
+      const direction = isActive ? state.sort.direction : "";
+      const indicator = direction === "desc" ? "▼" : direction === "asc" ? "▲" : "";
+      const ariaSort = direction === "desc" ? "descending" : direction === "asc" ? "ascending" : "none";
+      const label = spokenLabel || visibleLabel;
+
+      return `
+        <th class="${cellClassName}" aria-sort="${ariaSort}">
+          <button
+            class="mini-v2-sort-button ${isActive ? "is-active" : ""} ${cellClassName === "mini-v2-cell-avail" ? "is-avail" : ""}"
+            type="button"
+            data-action="toggle-sort"
+            data-sort-key="${escapeHtml(sortKey)}"
+            aria-label="Sort by ${escapeHtml(label)}${direction ? `, currently ${ariaSort}` : ""}"
+          >
+            <span class="mini-v2-sort-label">${escapeHtml(visibleLabel)}</span>
+            <span class="mini-v2-sort-indicator" aria-hidden="true">${indicator}</span>
+          </button>
+        </th>
+      `;
+    }
+
     function handleRootClick(event) {
       const clickTarget = event.target instanceof Element ? event.target : null;
       const clickedInsideLocationCombobox = !!(clickTarget && clickTarget.closest("#miniV2LocationCombobox"));
@@ -889,6 +916,12 @@
           state.locationMenuOpen = false;
           state.filtersApplied = createEmptyFilterState();
           state.openFacetKey = "";
+          renderAllPreservingScroll();
+          return;
+        }
+
+        if (action === "toggle-sort") {
+          toggleSortState(actionButton.getAttribute("data-sort-key") || "");
           renderAllPreservingScroll();
           return;
         }
@@ -1130,7 +1163,7 @@
       const search = state.search.trim().toLowerCase();
       const filterState = filterStateOverride || state.filtersApplied;
 
-      return state.groups.filter(group => {
+      const filteredGroups = state.groups.filter(group => {
         if (search && !group.searchText.includes(search)) return false;
 
         if (state.locationFilter !== "all") {
@@ -1146,6 +1179,8 @@
 
         return true;
       });
+
+      return sortGroups(filteredGroups);
     }
 
     function matchesStructuredFilters(group, filterState) {
@@ -1169,6 +1204,102 @@
         paintedOnly: false,
         needsStickersOnly: false
       };
+    }
+
+    function toggleSortState(sortKey) {
+      if (!sortKey) return;
+
+      const defaultDirection = getDefaultSortDirection(sortKey);
+      const alternateDirection = defaultDirection === "desc" ? "asc" : "desc";
+
+      if (state.sort.key !== sortKey) {
+        state.sort = { key: sortKey, direction: defaultDirection };
+        return;
+      }
+
+      if (state.sort.direction === defaultDirection) {
+        state.sort.direction = alternateDirection;
+        return;
+      }
+
+      if (state.sort.direction === alternateDirection) {
+        state.sort = { key: "", direction: "" };
+        return;
+      }
+
+      state.sort = { key: sortKey, direction: defaultDirection };
+    }
+
+    function getDefaultSortDirection(sortKey) {
+      return sortKey === "avail" ? "desc" : "asc";
+    }
+
+    function sortGroups(groups) {
+      if (!state.sort.key || !state.sort.direction) {
+        return groups.slice().sort((left, right) => (left.originalOrder || 0) - (right.originalOrder || 0));
+      }
+
+      const directionMultiplier = state.sort.direction === "asc" ? 1 : -1;
+      return groups.slice().sort((left, right) => {
+        const comparison = compareGroupsBySortKey(left, right, state.sort.key);
+        if (comparison !== 0) return comparison * directionMultiplier;
+
+        const nameTieBreak = compareText(left.name, right.name);
+        if (nameTieBreak !== 0) return nameTieBreak;
+
+        return (left.originalOrder || 0) - (right.originalOrder || 0);
+      });
+    }
+
+    function compareGroupsBySortKey(left, right, sortKey) {
+      if (sortKey === "avail") {
+        return left.available - right.available;
+      }
+
+      if (sortKey === "name") return compareText(left.name, right.name);
+      if (sortKey === "home") return compareText(left.home, right.home);
+      if (sortKey === "size") return compareSizeValues(left.size, right.size);
+      if (sortKey === "type") return compareText(left.creatureType, right.creatureType);
+      if (sortKey === "race") return compareText(left.race || "n/a", right.race || "n/a");
+      if (sortKey === "sex") return compareText(left.sex || "n/a", right.sex || "n/a");
+      if (sortKey === "role") return compareText(left.role || "n/a", right.role || "n/a");
+
+      return 0;
+    }
+
+    function compareSizeValues(left, right) {
+      const leftRank = getSizeSortRank(left);
+      const rightRank = getSizeSortRank(right);
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return compareText(left, right);
+    }
+
+    function getSizeSortRank(size) {
+      switch (String(size || "").trim().toLowerCase()) {
+        case "tiny":
+          return 0;
+        case "small":
+          return 1;
+        case "medium":
+          return 2;
+        case "large":
+          return 3;
+        case "huge":
+          return 4;
+        case "gargantuan":
+          return 5;
+        case "n/a":
+          return 6;
+        default:
+          return 7;
+      }
+    }
+
+    function compareText(left, right) {
+      return String(left || "").localeCompare(String(right || ""), undefined, {
+        sensitivity: "base",
+        numeric: true
+      });
     }
 
     function getSelectedGroup() {
