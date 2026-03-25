@@ -98,6 +98,7 @@
     let facetHideTimer = null;
     let facetSwapTimer = null;
     let detailWidthSyncTimer = null;
+    let detailMarqueeSyncTimer = null;
 
     initMiniV2();
 
@@ -281,7 +282,7 @@
         group.setNumber,
         group.notes
       ]
-        .concat(copies.map(copy => [copy.id, copy.sticker, copy.currentLocation].join(" ")))
+        .concat(copies.map(copy => [copy.id, copy.sticker, copy.currentLocation, copy.note || ""].join(" ")))
         .join(" ")
         .toLowerCase();
 
@@ -683,15 +684,21 @@
       const dirtyCount = group.copies.filter(isDirty).length;
       const missingFieldLabels = getMissingFieldLabels(group);
       const missingFieldCount = missingFieldLabels.length;
+      const canSetAllHome = group.copies.some(copy => getEffectiveLocation(copy) !== copy.home);
+      const availabilityTone = statusClass(getStatusKey(group));
+      const availabilitySummary = `${group.available} / ${group.total}`;
+      const collectionSummary = getCollectionSummary(group);
+      const inventoryBlockClass = group.copies.length > 1 ? "mini-v2-inventory-block" : "mini-v2-inventory-block is-single-column";
       detailHeaderTitleNode.textContent = group.name;
       detailHeaderTagsNode.innerHTML = [
         missingFieldCount
           ? renderDetailTag(
             `${missingFieldCount} missing field${missingFieldCount === 1 ? "" : "s"}`,
-            "is-danger",
+            "is-warn",
             `Missing: ${missingFieldLabels.join(", ")}`
           )
           : renderDetailTag("Ready", "is-success"),
+        !group.paint ? renderDetailTag("Unpainted", "is-neutral") : "",
         dirtyCount ? renderDetailTag(`Unsaved ${dirtyCount}`, "is-warn") : ""
       ].join("");
       detailCloseButtonNode.disabled = false;
@@ -700,56 +707,44 @@
 
       detailContentNode.innerHTML = `
         <div class="mini-v2-detail-panel">
-          <section class="mini-v2-stat-grid">
-            ${renderStatCard("Home", group.home)}
-            ${renderStatCard("Available", `<span class="mini-v2-count ${statusClass(getStatusKey(group))}">${group.available}</span>`)}
-            ${renderStatCard("Total", String(group.total))}
-            ${renderStatCard("Checked Out", String(group.checkedOut))}
-          </section>
-
-          <section class="mini-v2-meta-grid">
-            ${renderReadCard("Size", group.size)}
-            ${renderReadCard("Creature Type", group.creatureType)}
-            ${renderReadCard("Sex", group.sex)}
-            ${renderReadCard("Race", group.race || "n/a")}
-            ${renderReadCard("Role", group.role || "n/a")}
-            ${renderReadCard("Paint", group.paint ? "Painted" : "Unpainted")}
-            ${renderReadCard("Set", group.set || "n/a")}
-            ${renderReadCard("Set #", group.setNumber || "n/a")}
-          </section>
-
-          <section class="mini-v2-note-card">
-            <div class="mini-v2-note-label">Notes</div>
-            <div class="mini-v2-note-body">${escapeHtml(group.notes || "No notes yet.")}</div>
-          </section>
-
-          <section class="mini-v2-copy-card">
-            <div class="mini-v2-copy-header">
-              <div>
-                <div class="mini-v2-copy-title">Physical Copies</div>
-                <div class="mini-v2-copy-header-copy">Use the sticker-aware copy list below to stage location changes before saving.</div>
-              </div>
-              <div class="mini-v2-copy-actions">
-                <button class="button mini-v2-copy-btn" type="button" data-action="reset-changes">Reset Changes</button>
-                <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="set-all-home">Set All Home</button>
-                <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-changes">Save Mock Changes</button>
-              </div>
+          <section class="mini-v2-detail-group">
+            <div class="mini-v2-detail-group-title">Details</div>
+            <div class="mini-v2-detail-grid">
+              ${renderReadCard("Size", group.size)}
+              ${renderReadCard("Creature Type", group.creatureType)}
+              ${renderReadCard("Race", group.race || "n/a")}
+              ${renderReadCard("Sex", group.sex)}
+              ${renderReadCard("Role", group.role || "n/a")}
+              ${renderReadCard("Set", collectionSummary, { marquee: true })}
             </div>
-            <div class="mini-v2-copy-wrap">
-              <table class="mini-v2-table mini-v2-copy-table" aria-label="Physical copies">
-                <thead>
-                  <tr>
-                    <th>Sticker</th>
-                    <th>Current Location</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>${group.copies.map(renderCopyRow).join("")}</tbody>
-              </table>
+          </section>
+
+          <section class="mini-v2-detail-group ${inventoryBlockClass}">
+            <div class="mini-v2-detail-group-title">Inventory</div>
+            <section class="mini-v2-summary-strip">
+              ${renderInventoryCard("Availability", availabilitySummary, availabilityTone)}
+              ${renderInventoryCard("Home", group.home, "", { marquee: true })}
+              <div class="mini-v2-summary-spacer" aria-hidden="true"></div>
+            </section>
+            ${renderCopyGrid(group.copies)}
+            <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
+              <button class="button mini-v2-copy-btn" type="button" data-action="reset-changes"${dirtyCount ? "" : " disabled"}>Reset</button>
+              <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="set-all-home"${canSetAllHome ? "" : " disabled"}>Set All Home</button>
+              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-changes"${dirtyCount ? "" : " disabled"}>Save Changes</button>
+            </div>
+          </section>
+
+          <section class="mini-v2-detail-group">
+            <div class="mini-v2-detail-group-title">Additional</div>
+            <div class="mini-v2-note-card">
+              <div class="mini-v2-note-label">Notes</div>
+              <div class="mini-v2-note-body">${escapeHtml(group.notes || "No notes yet.")}</div>
             </div>
           </section>
         </div>
       `;
+
+      scheduleDetailMarqueeSync(260);
     }
 
     function renderStatusBadge(group) {
@@ -758,7 +753,7 @@
     }
 
     function renderDetailTag(label, className, titleText) {
-      return `<span class="mini-v2-detail-tag ${className}"${titleText ? ` title="${escapeHtml(titleText)}"` : ""}>${escapeHtml(label)}</span>`;
+      return `<span class="mini-v2-detail-tag ${className || ""}"${titleText ? ` title="${escapeHtml(titleText)}"` : ""}>${escapeHtml(label)}</span>`;
     }
 
     function renderStatCard(label, valueMarkup) {
@@ -770,11 +765,42 @@
       `;
     }
 
-    function renderReadCard(label, value) {
+    function renderReadCard(label, value, options) {
+      const config = options || {};
       return `
         <div class="mini-v2-read-card">
           <div class="mini-v2-field-label">${escapeHtml(label)}</div>
-          <div class="mini-v2-read-value">${escapeHtml(value)}</div>
+          ${renderReadValue(value, config)}
+        </div>
+      `;
+    }
+
+    function renderInventoryCard(label, value, toneClass, options) {
+      const config = options || {};
+      return `
+        <div class="mini-v2-read-card mini-v2-inventory-card ${toneClass || ""}">
+          <div class="mini-v2-field-label">${escapeHtml(label)}</div>
+          ${renderReadValue(value, { marquee: !!config.marquee, extraClass: "mini-v2-inventory-value" })}
+        </div>
+      `;
+    }
+
+    function renderReadValue(value, options) {
+      const config = options || {};
+      const className = ["mini-v2-read-value", config.extraClass || "", config.marquee ? "mini-v2-marquee-value" : ""]
+        .filter(Boolean)
+        .join(" ");
+      const safeValue = escapeHtml(value);
+
+      if (!config.marquee) {
+        return `<div class="${className}">${safeValue}</div>`;
+      }
+
+      return `
+        <div class="${className}" title="${safeValue}">
+          <span class="mini-v2-marquee-track">
+            <span class="mini-v2-marquee-text">${safeValue}</span>
+          </span>
         </div>
       `;
     }
@@ -783,6 +809,7 @@
       const effectiveLocation = getEffectiveLocation(copy);
       const away = effectiveLocation !== copy.home;
       const dirty = isDirty(copy);
+      const noteValue = copy.note || "";
       const statusMarkup = dirty
         ? '<span class="mini-v2-copy-status is-dirty">Unsaved</span>'
         : away
@@ -792,13 +819,34 @@
       return `
         <tr class="mini-v2-copy-row ${away ? "is-away" : ""} ${dirty ? "is-dirty" : ""}">
           <td>${escapeHtml(copy.sticker || "Needs sticker")}</td>
+          <td>${statusMarkup}</td>
           <td>
             <select class="mini-v2-copy-select" data-copy-id="${escapeHtml(copy.id)}">
               ${renderCopyLocationOptions(copy, effectiveLocation)}
             </select>
           </td>
-          <td>${statusMarkup}</td>
+          <td class="mini-v2-copy-note-cell" title="${escapeHtml(noteValue || "No individual note")}">${escapeHtml(noteValue || "—")}</td>
         </tr>
+      `;
+    }
+
+    function renderCopyGrid(copies) {
+      return `
+        <div class="mini-v2-copy-grid">
+          <div class="mini-v2-copy-table-shell">
+            <table class="mini-v2-table mini-v2-copy-table" aria-label="Individual miniature copies">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Status</th>
+                  <th>Current Location</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody>${copies.map(renderCopyRow).join("")}</tbody>
+            </table>
+          </div>
+        </div>
       `;
     }
 
@@ -808,6 +856,15 @@
           <option value="${escapeHtml(location)}"${effectiveLocation === location ? " selected" : ""}>${escapeHtml(location)}</option>
         `))
         .join("");
+    }
+
+    function getCollectionSummary(group) {
+      const hasSet = hasMeaningfulValue(group.set) && String(group.set).trim().toLowerCase() !== "n/a";
+      const hasSetNumber = hasMeaningfulValue(group.setNumber);
+      if (hasSet && hasSetNumber) return `${group.set} (${group.setNumber})`;
+      if (hasSet) return String(group.set);
+      if (hasSetNumber) return `#${group.setNumber}`;
+      return "n/a";
     }
 
     function renderSortHeader(cellClassName, sortKey, visibleLabel, spokenLabel) {
@@ -1134,6 +1191,7 @@
     function syncDesktopLayoutMetrics(force) {
       if (!desktopMq.matches) {
         root.style.removeProperty("--mini-v2-browse-table-width");
+        scheduleDetailMarqueeSync(0);
         return;
       }
 
@@ -1148,22 +1206,75 @@
       if (width > 0) {
         root.style.setProperty("--mini-v2-browse-table-width", `${width}px`);
       }
+
+      scheduleDetailMarqueeSync(0);
     }
 
     function handleDetailPanelTransitionEnd(event) {
-      if (!desktopMq.matches) return;
       if (!event || event.target !== detailPanelNode) return;
       if (!["width", "max-width", "flex-basis", "transform"].includes(event.propertyName)) return;
-      if (root.classList.contains("mini-v2-has-detail")) return;
 
-      if (detailWidthSyncTimer) {
-        clearTimeout(detailWidthSyncTimer);
+      if (!root.classList.contains("mini-v2-has-detail") && desktopMq.matches) {
+        if (detailWidthSyncTimer) {
+          clearTimeout(detailWidthSyncTimer);
+        }
+
+        detailWidthSyncTimer = setTimeout(function () {
+          syncDesktopLayoutMetrics(true);
+          detailWidthSyncTimer = null;
+        }, 0);
       }
 
-      detailWidthSyncTimer = setTimeout(function () {
-        syncDesktopLayoutMetrics(true);
-        detailWidthSyncTimer = null;
-      }, 0);
+      scheduleDetailMarqueeSync(80);
+    }
+
+    function scheduleDetailMarqueeSync(delayMs) {
+      if (detailMarqueeSyncTimer) {
+        clearTimeout(detailMarqueeSyncTimer);
+      }
+
+      detailMarqueeSyncTimer = setTimeout(function () {
+        syncDetailMarquees();
+        detailMarqueeSyncTimer = null;
+      }, delayMs || 0);
+    }
+
+    function syncDetailMarquees() {
+      if (!detailContentNode || detailContentNode.hidden) return;
+
+      detailContentNode.querySelectorAll(".mini-v2-marquee-value").forEach(node => {
+        const textNode = node.querySelector(".mini-v2-marquee-text");
+        if (!textNode) return;
+
+        if (node._miniV2MarqueeAnimation) {
+          node._miniV2MarqueeAnimation.cancel();
+          node._miniV2MarqueeAnimation = null;
+        }
+
+        textNode.style.transform = "translateX(0)";
+
+        const overflowAmount = Math.ceil(textNode.scrollWidth - node.clientWidth);
+        if (overflowAmount <= 1) return;
+
+        const moveSeconds = Math.max(4, Math.min(10, overflowAmount / 22));
+        const totalSeconds = moveSeconds + 4;
+        const startPauseOffset = 2 / totalSeconds;
+        const endPauseOffset = (2 + moveSeconds) / totalSeconds;
+
+        node._miniV2MarqueeAnimation = textNode.animate(
+          [
+            { transform: "translateX(0)", offset: 0 },
+            { transform: "translateX(0)", offset: startPauseOffset },
+            { transform: `translateX(${-overflowAmount}px)`, offset: endPauseOffset },
+            { transform: `translateX(${-overflowAmount}px)`, offset: 1 }
+          ],
+          {
+            duration: totalSeconds * 1000,
+            iterations: Infinity,
+            easing: "linear"
+          }
+        );
+      });
     }
 
     function getFilteredGroups(filterStateOverride) {

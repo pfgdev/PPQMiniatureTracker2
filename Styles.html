@@ -1303,10 +1303,24 @@
     color: var(--mini-v2-danger-ink);
   }
 
+  .mini-v2-detail-tag.is-neutral {
+    background: var(--mini-v2-secondary);
+    border-color: var(--ppq-border-main);
+    color: #5b6f8f;
+  }
+
+  .mini-v2-summary-strip,
   .mini-v2-stat-grid,
-  .mini-v2-meta-grid {
+  .mini-v2-meta-grid,
+  .mini-v2-detail-grid,
+  .mini-v2-collection-grid {
     display: grid;
     gap: 10px;
+  }
+
+  .mini-v2-summary-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
   }
 
   .mini-v2-stat-grid {
@@ -1317,6 +1331,14 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .mini-v2-detail-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .mini-v2-collection-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .mini-v2-stat-card,
   .mini-v2-read-card,
   .mini-v2-note-card,
@@ -1324,6 +1346,7 @@
     border: 1px solid var(--mini-v2-edge-soft);
     border-radius: 10px;
     background: var(--ppq-surface-panel-strong);
+    min-width: 0;
   }
 
   .mini-v2-stat-card,
@@ -1339,6 +1362,7 @@
     font-size: 16px;
     font-weight: 700;
     line-height: 1.35;
+    min-height: calc(1em * 1.35);
   }
 
   .mini-v2-note-body {
@@ -1346,35 +1370,112 @@
     color: #32425f;
     font-size: 14px;
     line-height: 1.55;
-    white-space: pre-wrap;
-  }
-
-  .mini-v2-copy-card {
+    white-space: nowrap;
     overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .mini-v2-copy-header {
+  .mini-v2-detail-panel {
+    display: grid;
+    gap: 24px;
+  }
+
+  .mini-v2-detail-group {
+    display: grid;
+    gap: 10px;
+  }
+
+  .mini-v2-detail-group-title {
+    color: var(--mini-v2-muted);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    line-height: var(--mini-v2-label-height);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mini-v2-inventory-block {
+    gap: 8px;
+  }
+
+  .mini-v2-inventory-card {
+    min-height: 0;
+  }
+
+  .mini-v2-inventory-card.is-success {
+    background: #f4fbf1;
+    border-color: var(--mini-v2-success-edge);
+  }
+
+  .mini-v2-inventory-card.is-warn {
+    background: #fffaf0;
+    border-color: var(--mini-v2-warn-edge);
+  }
+
+  .mini-v2-inventory-card.is-danger {
+    background: #fff4f4;
+    border-color: var(--mini-v2-danger-edge);
+  }
+
+  .mini-v2-inventory-value {
+    color: #253652;
+  }
+
+  .mini-v2-field-label,
+  .mini-v2-read-value,
+  .mini-v2-inventory-value,
+  .mini-v2-note-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mini-v2-marquee-value {
+    position: relative;
+    overflow: hidden;
+    text-overflow: clip;
+  }
+
+  .mini-v2-marquee-track {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .mini-v2-marquee-text {
+    display: block;
+    width: max-content;
+    max-width: none;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: nowrap;
+    line-height: inherit;
+  }
+
+  .mini-v2-inventory-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    align-content: start;
+  }
+
+  .mini-v2-summary-spacer {
+    min-width: 0;
+  }
+
+  .mini-v2-inventory-actions-row {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--ppq-border-soft);
-    background: #f3f8fc;
-  }
-
-  .mini-v2-copy-header-copy {
-    color: #61718d;
-    font-size: 13px;
-    line-height: 1.45;
-  }
-
-  .mini-v2-copy-actions {
-    display: inline-flex;
+    justify-content: flex-end;
     align-items: center;
     gap: 8px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+  }
+
+  .mini-v2-inventory-actions-row .mini-v2-primary {
+    grid-column: auto;
   }
 
   .mini-v2-copy-btn {
@@ -1387,13 +1488,48 @@
     line-height: 1.2;
   }
 
-  .mini-v2-copy-wrap {
-    padding: 0;
+  .mini-v2-inventory-actions .mini-v2-primary {
+    grid-column: 1 / -1;
   }
 
-  .mini-v2-copy-table td:last-child,
-  .mini-v2-copy-table th:last-child {
-    width: 120px;
+  .mini-v2-copy-grid {
+    display: block;
+  }
+
+  .mini-v2-copy-table-shell {
+    min-width: 0;
+    border: 1px solid var(--mini-v2-edge-soft);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--ppq-surface-panel-strong);
+  }
+
+  .mini-v2-copy-table th:first-child,
+  .mini-v2-copy-table td:first-child {
+    width: 44px;
+  }
+
+  .mini-v2-copy-table th:nth-child(2),
+  .mini-v2-copy-table td:nth-child(2) {
+    width: 88px;
+  }
+
+  .mini-v2-copy-table th:nth-child(4),
+  .mini-v2-copy-table td:nth-child(4) {
+    width: 42%;
+  }
+
+  .mini-v2-copy-table th {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mini-v2-copy-note-cell {
+    color: var(--mini-v2-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .mini-v2-copy-row.is-away td {
@@ -1409,18 +1545,18 @@
   }
 
   .mini-v2-copy-select {
-    min-width: 180px;
+    min-width: 0;
     width: 100%;
-    min-height: 30px;
-    padding: 5px 8px;
+    min-height: 28px;
+    padding: 4px 8px;
     font-size: 13px;
   }
 
   .mini-v2-copy-status {
     display: inline-flex;
     align-items: center;
-    min-height: 24px;
-    padding: 4px 8px;
+    min-height: 22px;
+    padding: 3px 8px;
     border-radius: 999px;
     border: 1px solid transparent;
     font-size: 11px;
@@ -1595,7 +1731,7 @@
     }
 
     .mini-v2-search-row,
-    .mini-v2-copy-header {
+    .mini-v2-summary-strip {
       grid-template-columns: 1fr;
       flex-direction: column;
       align-items: stretch;
@@ -1605,8 +1741,11 @@
       gap: 8px;
     }
 
+    .mini-v2-copy-grid,
     .mini-v2-stat-grid,
-    .mini-v2-meta-grid {
+    .mini-v2-meta-grid,
+    .mini-v2-detail-grid,
+    .mini-v2-collection-grid {
       grid-template-columns: 1fr;
     }
 
@@ -1619,10 +1758,6 @@
     .v2-card-body {
       padding-left: 14px;
       padding-right: 14px;
-    }
-
-    .mini-v2-copy-actions {
-      justify-content: flex-start;
     }
 
     .mini-v2-table th,

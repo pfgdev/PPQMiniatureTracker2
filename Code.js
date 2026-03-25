@@ -39,7 +39,7 @@ function buildMockAppState_() {
       sex: "Male",
       race: "Dwarf",
       role: "Melee",
-      paint: true,
+      paint: false,
       set: "n/a",
       setNumber: "",
       notes: "Repeat miniature with custom paint job. Works well as a woodsman or ranger.",
@@ -60,6 +60,18 @@ function buildMockAppState_() {
       setNumber: "23",
       notes: "Very basic elf with a sword. Useful everywhere.",
       stickers: ["C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18", "C19"],
+      copyNotes: [
+        "Purple and green variant",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Red and blue variant",
+        ""
+      ],
       currentLocations: [
         "Spare People",
         "Spare People",
@@ -210,6 +222,7 @@ function createMockGroup_(config) {
       id: config.rootId + "-" + miniNumber,
       miniNumber: miniNumber,
       sticker: config.stickers[i] || "",
+      note: (config.copyNotes && config.copyNotes[i]) || "",
       currentLocation: config.currentLocations[i],
       home: config.home
     });

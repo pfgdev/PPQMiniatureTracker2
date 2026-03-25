@@ -833,3 +833,8 @@ Most importantly:
 - the app should be calmer than Loot Chests
 - more operational than decorative
 - and explicitly optimized for `find mini -> confirm mini -> move copies`
+
+## Post-UI TODOs
+
+- define and implement the distinction between an unassigned sticker and an `n/a` sticker
+- make sure that distinction is handled consistently in data, filtering, display, and future edit flows
