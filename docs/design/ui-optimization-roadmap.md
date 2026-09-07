@@ -1,5 +1,9 @@
 # UI Optimization Roadmap
 
+> September 2026: Start with [the current-state review](recalibration-2026-09.md).
+> This roadmap records earlier proposals, including superseded filter and inspector
+> layouts. The review records the accepted UI, verified bugs, and restart sequence.
+
 ## Purpose
 
 This document distills the recent GPT design session into an implementation-friendly UI roadmap for `PPQ Miniature Tracker`.
