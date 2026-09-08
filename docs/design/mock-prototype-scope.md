@@ -24,7 +24,7 @@ without being blocked by spreadsheet integration details.
 - `Set All Home`
 - mock save that only updates browser state
 
-## Intentionally deferred
+## Deferred From The Original Prototype
 
 - real spreadsheet reads
 - real spreadsheet writes
@@ -42,4 +42,18 @@ without being blocked by spreadsheet integration details.
 
 ## Expected next phase
 
-After UX review, connect this mock structure to a sheet-backed data layer instead of rebuilding the UI from scratch.
+Continue mock-only UX development beyond the original browsing prototype:
+
+1. Groups / Individuals browsing, including a proposed switching control that fits the current UI.
+2. Shared editing in the existing details area.
+3. Add miniature, evaluating reuse of the editor in a blank state before committing to a modal or drawer.
+4. Sticker management, including discussion of a legacy-style batch workflow when that phase begins.
+
+Each step is iterative, not a one-pass deliverable. The assistant should propose
+interaction details and UX alternatives from the user's intent. These workflows
+must be designed and tested before spreadsheet integration. The user's final
+evening update is planning only; implementation waits for a later session.
+
+The user explicitly deferred real reads, real writes, and integration-specific
+data decisions until development is complete and they approve moving on.
+See [the current handoff](recalibration-2026-09.md#current-direction-mock-only-ux-development).

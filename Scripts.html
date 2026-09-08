@@ -136,7 +136,11 @@
               <div id="miniV2ListStage" class="mini-v2-list-stage">
                 <div class="v2-card-header mini-v2-list-header">
                   <span>Browse Minis</span>
-                  <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note"></span>
+                  <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note" hidden></span>
+                  <div class="mini-v2-view-switch" role="group" aria-label="Browse view preview" title="Visual preview only; the table still shows groups">
+                    <button type="button" data-view-preview="groups" aria-pressed="true">Groups</button>
+                    <button type="button" data-view-preview="individuals" aria-pressed="false">Individuals</button>
+                  </div>
                 </div>
                 <div class="v2-card-body mini-v2-table-body">
                   <div class="mini-v2-controls">
@@ -921,6 +925,15 @@
 
     function handleRootClick(event) {
       const clickTarget = event.target instanceof Element ? event.target : null;
+      const viewPreviewButton = clickTarget && clickTarget.closest("button[data-view-preview]");
+      if (viewPreviewButton && root.contains(viewPreviewButton)) {
+        // Visual prototype only: do not change application state or rerender.
+        event.stopPropagation();
+        viewPreviewButton.parentElement.querySelectorAll("button").forEach(button => {
+          button.setAttribute("aria-pressed", String(button === viewPreviewButton));
+        });
+        return;
+      }
       const clickedInsideLocationCombobox = !!(clickTarget && clickTarget.closest("#miniV2LocationCombobox"));
       const clickedInsideFacetShell = !!(clickTarget && clickTarget.closest("#miniV2FacetShell"));
       const shouldCloseLocationMenu = state.locationMenuOpen && !clickedInsideLocationCombobox;

@@ -7,6 +7,45 @@ the follow-up stabilization below implements the confirmed fixes.
 This is the current handoff. Earlier design documents preserve useful history,
 but their proposed layouts and step numbers sometimes conflict with the accepted UI.
 
+## Current Direction: Mock-Only UX Development
+
+The user confirmed the current development app is running, and corrected the
+restart priorities after the stabilization pass:
+
+- This is active UX and functionality design, not preparation to ship. The user estimates development is closer to 30% complete.
+- Continue using mock data until the user considers development complete and explicitly approves integration.
+- Do not connect the real sheet, even read-only, or introduce real persistence during this phase.
+- Spreadsheet schema, missing/n/a semantics, and other integration decisions stay deferred. Do not make them prerequisites for UX work.
+- Design and exercise add-mini, editing, sticker management, and group/individual browsing interactions using browser-only mock state.
+- The accepted current layout is a baseline for experimentation, not evidence that the application is nearly finished.
+
+### Recovered Flow Notes
+
+- Groups / Individuals: the user's earlier conversation specifies the same browse table, replacing `#` with sticker `ID`, and Home with Current Location plus the existing Home/Away badge treatment. One row per copy; all remaining columns stay unchanged. Both views open the same group inspector. Preserve the clipping/column stability while testing the new content.
+- Sticker-first search: roadmap step 10 proposes exact sticker recognition, opening the parent group, scrolling to the copy, and temporarily highlighting it. This is a useful companion proposal, not a reason to change the user's agreed toggle design.
+- Shared editing: the user described an Edit action in the current Close-button position, switching shared fields to editable controls and submitting changes for the whole group. Individual sticker/location/note editing is separate. Earlier modal/drawer suggestions are less specific and do not override this later direction.
+- Add miniature: roadmap step 13 lists the flow, and `ui-direction.md` suggests a secondary modal/drawer rather than making entry the landing page. No finalized screen-by-screen new-app creation flow was found in these notes.
+- Sticker management: `docs/legacy/legacy-workflows.md` records a queue of copies needing stickers, batch dropdown selection, duplicate feedback, Apply Stickers, and a separate batch unassignment flow. These are legacy interaction references, not an approved new-app screen design. Next-available-sticker selection is only a proposed improvement.
+
+### Agreed High-Level UX Sequence
+
+This sequence incorporates the user's end-of-evening feedback. It is not a fixed
+screen specification or a list to implement in one pass. Each step is expected
+to involve substantial design, browser feedback, and iteration.
+
+1. **Groups / Individuals.** Keep the established table and shared inspector intent above. The user approved the visual-only segmented control beside Browse Minis, with a 16px gap and a 1px downward optical nudge. Its styling and placement are settled for this iteration; switching the actual table is not implemented. Consider search/filter/sort continuity, selection, counts, location badges, and available room with the inspector open when integrating it. Prefer fitting the current UI, but surface alternatives if it cannot support the interaction well.
+2. **Shared editing.** Retain the user's strong direction: enter edit mode from the detail-header action area, edit shared miniature fields in place, and apply or cancel mock changes. Iterate on the editing experience before deciding how creation should work. Keep group-level edits distinct from individual-copy edits.
+3. **Add miniature.** Evaluate this after shared editing has been built and reviewed. Creation might reuse the same editor in a blank/new-entry state, including an editable name, rather than introducing a separate screen. A modal or drawer remains an option, not a commitment. Let experience with the editor reveal what additional controls or steps are actually needed.
+4. **Sticker assignment and management.** Follow the preceding flows, not in parallel with them. Individual group editing may offer manual assignment, but a dedicated batch workflow similar to the legacy experience will likely also be useful. When this step begins, the user will explain the pain points and the assistant will propose UX alternatives. Do not settle its detailed design now.
+
+### Iteration And Resume Boundary
+
+- Remain mock-only throughout these UX steps, with no real spreadsheet connection or persistence.
+- The assistant is responsible for interpreting intent, filling implementation gaps, and recommending well-fitting UX options. The user should not have to specify every control or pixel.
+- Work one interaction-sized slice at a time, review it in the browser, and revise before moving on. Completing an initial implementation does not complete the design step.
+- Preserve the existing visual language and stable table behavior where practical; do not treat the current layout as untouchable if a core workflow exposes a limitation.
+- The September 7 session ended at planning. On September 8 the user approved implementing and saving only the selector's visual prototype. Do not treat that approval as permission to integrate the Individuals view or begin the later workflows.
+
 ## Stabilization Follow-Up (2026-09-07)
 
 Implemented and verified with `tests/regression.cjs` in local headless Chrome:
@@ -22,8 +61,8 @@ Implemented and verified with `tests/regression.cjs` in local headless Chrome:
 - Missing paint is no longer incorrectly labeled Unpainted; only explicit false gets that tag.
 
 All eight regression scenarios passed, with no browser script errors. Desktop
-screenshot reviewed. Authenticated Apps Script browser behavior still needs the
-owner's `/dev` test; no real sheet reads/writes were added. Historical findings
+screenshot reviewed. The owner subsequently confirmed the current development
+app is running; no real sheet reads/writes were added. Historical findings
 below describe the pre-fix state, not outstanding bugs unless noted here.
 
 The [command and feedback reference](../development.md) explains Git, clasp,
@@ -169,7 +208,11 @@ or other browsers. Actual sheet values and sample formulas were subsequently
 inspected in the linked source-sheet audit; app integration is still pending.
 Browser tooling and screenshots were kept in a temporary directory outside the repo.
 
-## Recommended Restart Sequence
+## Superseded Integration-First Restart Proposal
+
+The sequence below is retained as historical technical planning only. It is NOT
+the current work order. Follow the mock-only UX direction above; revisit these
+integration topics only when the user says the app design is ready.
 
 ### A. Small Stabilization Pass
 

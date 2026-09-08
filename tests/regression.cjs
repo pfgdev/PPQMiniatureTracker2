@@ -56,6 +56,55 @@ const firstCopy = '013-ZHESOL-01';
     const tableWidth = () => page.locator('.mini-v2-browse-table').evaluate(node => node.getBoundingClientRect().width);
     const check = async (name, test) => { await test(); console.log(`PASS ${name}`); };
 
+    await check('view selector is visual-only and preserves the original header height', async () => {
+      for (const width of [1440, 1100, 980, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        for (const detailOpen of [false, true]) {
+          if (detailOpen) await open(soldier);
+          const measurements = await page.evaluate(() => {
+            const header = document.querySelector('.mini-v2-list-header');
+            const control = header.querySelector('.mini-v2-view-switch');
+            const note = document.getElementById('miniV2ListHeaderNote');
+            const height = header.getBoundingClientRect().height;
+            const controlRect = control.getBoundingClientRect();
+            const headerRect = header.getBoundingClientRect();
+            const titleRect = header.querySelector('span').getBoundingClientRect();
+            const titleGap = controlRect.left - titleRect.right;
+            const labelsFit = [...control.querySelectorAll('button')].every(n => n.scrollWidth <= n.clientWidth);
+            control.style.display = 'none';
+            note.hidden = false;
+            const originalHeight = header.getBoundingClientRect().height;
+            control.style.display = '';
+            note.hidden = true;
+            return { height, originalHeight, labelsFit, titleGap, inside: controlRect.right <= headerRect.right && controlRect.left >= headerRect.left };
+          });
+          assert.equal(measurements.height, measurements.originalHeight, `header height at ${width}, open=${detailOpen}`);
+          assert.ok(measurements.inside && measurements.labelsFit);
+          assert.ok(Math.abs(measurements.titleGap - 16) < 1, `title gap at ${width}, open=${detailOpen}`);
+          const table = await page.locator('.mini-v2-browse-table').innerHTML();
+          const detail = await page.locator('#miniV2DetailContent').innerHTML();
+          const toggle = page.locator('[data-view-preview="individuals"]');
+          const before = await page.locator('.mini-v2-view-switch').boundingBox();
+          await toggle.click();
+          assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
+          assert.equal(await page.locator('.mini-v2-browse-table').innerHTML(), table);
+          assert.equal(await page.locator('#miniV2DetailContent').innerHTML(), detail);
+          const after = await page.locator('.mini-v2-view-switch').boundingBox();
+          if (JSON.stringify(after) !== JSON.stringify(before) && process.env.SCREENSHOT_PATH) {
+            await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-selector-failure.png') });
+          }
+          assert.deepEqual(after, before, `selector bounds at ${width}, open=${detailOpen}`);
+          assert.equal(await page.locator('#miniV2Root').evaluate(n => n.classList.contains('mini-v2-has-detail')), detailOpen);
+          await page.locator('[data-view-preview="groups"]').focus();
+          await page.keyboard.press('Space');
+          assert.equal(await page.locator('[data-view-preview="groups"]').getAttribute('aria-pressed'), 'true');
+        }
+        if (process.env.SCREENSHOT_PATH) await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-selector-${width}.png`) });
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
     await check('safe initial data embedding and exact text round trip', async () => {
       const hostile = JSON.parse(JSON.stringify(data));
       const note = '</script><script>window.__injected=true;</script> & <test>\u2028\u2029';

@@ -2,7 +2,8 @@
 
 > September 2026: Start with [the current-state review](recalibration-2026-09.md).
 > This roadmap records earlier proposals, including superseded filter and inspector
-> layouts. The review records the accepted UI, verified bugs, and restart sequence.
+> layouts. The review records the accepted UI, verified bugs, and current mock-only
+> [UX sequence and iteration boundaries](recalibration-2026-09.md#agreed-high-level-ux-sequence).
 
 ## Purpose
 
