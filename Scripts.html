@@ -1,6 +1,7 @@
 <script>
   (function () {
     const desktopMq = window.matchMedia("(min-width: 980px)");
+    const reducedMotionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
     const FILTER_OPTIONS = {
       sizes: ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"],
       creatureTypes: [
@@ -107,10 +108,16 @@
       bindNodes();
       renderLocationFilter();
       renderAll();
-      syncDesktopLayoutMetrics(true);
+      syncDesktopLayoutMetrics();
       bindEvents();
-      window.addEventListener("resize", syncDesktopLayoutMetrics);
-      new ResizeObserver(syncDesktopLayoutMetrics).observe(root);
+      window.addEventListener("resize", () => syncDesktopLayoutMetrics());
+      new ResizeObserver(() => syncDesktopLayoutMetrics()).observe(workspaceNode);
+      reducedMotionMq.addEventListener("change", () => scheduleDetailMarqueeSync(0));
+      window.addEventListener("beforeunload", event => {
+        if (!state.groups.some(group => group.copies.some(isDirty))) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
     }
 
     function buildShell() {
@@ -119,7 +126,7 @@
           <section class="v2-card mini-v2-top-card">
             <div class="v2-card-header">PPQ Miniature Tracker</div>
             <div class="v2-card-body mini-v2-top-card-body">
-              <p class="mini-v2-top-note">Work-in-Progress. This space will be used to submit new miniature entries.</p>
+              <p class="mini-v2-top-note">Mock data only. Save Changes lasts until reload; your Google Sheet is not changed.</p>
               <div id="miniV2SummaryLane" class="mini-v2-summary-lane"></div>
             </div>
           </section>
@@ -304,20 +311,42 @@
 
     function renderAllPreservingScroll(existingState) {
       const scrollState = existingState || captureScrollState();
+      const restoreFocus = captureFocus();
       renderAll();
+      restoreFocus();
       restoreScrollState(scrollState);
       return scrollState;
+    }
+
+    function captureFocus() {
+      const active = document.activeElement;
+      if (!active || !root.contains(active)) return () => {};
+      const identity = Array.from(active.attributes).filter(attribute =>
+        attribute.name === "id" || attribute.name.startsWith("data-")
+      );
+      return () => {
+        if (active.isConnected && !active.disabled && active.getClientRects().length) return;
+        const replacement = identity.length && Array.from(root.querySelectorAll(active.tagName))
+          .find(node => identity.every(attribute => node.getAttribute(attribute.name) === attribute.value));
+        if (replacement && !replacement.disabled && replacement.getClientRects().length) {
+          replacement.focus({ preventScroll: true });
+        } else {
+          (getSelectedGroup() ? detailCloseButtonNode : searchInputNode).focus({ preventScroll: true });
+        }
+      };
     }
 
     function renderSummaryLane() {
       const filtered = getFilteredGroups();
       const stickerWork = state.groups.filter(group => group.needsStickers).length;
+      const dirtyCount = state.groups.reduce((count, group) => count + group.copies.filter(isDirty).length, 0);
 
       summaryLaneNode.innerHTML = `
         <span class="mini-v2-chip is-primary">Mock Data</span>
         <span class="mini-v2-chip">Groups ${state.groups.length}</span>
         <span class="mini-v2-chip">Visible ${filtered.length}</span>
         <span class="mini-v2-chip ${stickerWork ? "is-warn" : ""}">Sticker Work ${stickerWork}</span>
+        ${dirtyCount ? `<button type="button" class="mini-v2-chip is-warn" data-action="review-changes" title="Open a miniature with pending location changes">Unsaved ${dirtyCount}</button>` : ""}
       `;
     }
 
@@ -698,7 +727,7 @@
             `Missing: ${missingFieldLabels.join(", ")}`
           )
           : renderDetailTag("Ready", "is-success"),
-        !group.paint ? renderDetailTag("Unpainted", "is-neutral") : "",
+        group.paint === false ? renderDetailTag("Unpainted", "is-neutral") : "",
         dirtyCount ? renderDetailTag(`Unsaved ${dirtyCount}`, "is-warn") : ""
       ].join("");
       detailCloseButtonNode.disabled = false;
@@ -738,7 +767,7 @@
             <div class="mini-v2-detail-group-title">Additional</div>
             <div class="mini-v2-note-card">
               <div class="mini-v2-note-label">Notes</div>
-              <div class="mini-v2-note-body">${escapeHtml(group.notes || "No notes yet.")}</div>
+              <div class="mini-v2-note-body" title="${escapeHtml(group.notes || "No notes yet.")}">${escapeHtml(group.notes || "No notes yet.")}</div>
             </div>
           </section>
         </div>
@@ -914,10 +943,27 @@
         const action = actionButton.getAttribute("data-action");
 
         if (action === "toggle-facet") {
+          const restoreFocus = captureFocus();
           const facetKey = actionButton.getAttribute("data-facet-key") || "";
           state.openFacetKey = state.openFacetKey === facetKey ? "" : facetKey;
           renderFacetBar();
           renderFacetFlyout();
+          restoreFocus();
+          return;
+        }
+
+        if (action === "review-changes") {
+          const dirtyGroups = state.groups.filter(group => group.copies.some(isDirty));
+          const currentIndex = dirtyGroups.findIndex(group => group.rootId === state.selectedRootId);
+          const group = dirtyGroups[(currentIndex + 1) % dirtyGroups.length];
+          if (!group) return;
+          if (!getFilteredGroups().some(visible => visible.rootId === group.rootId)) {
+            state.search = "";
+            state.locationFilter = "all";
+            state.filtersApplied = createEmptyFilterState();
+          }
+          state.selectedRootId = group.rootId;
+          renderAllPreservingScroll();
           return;
         }
 
@@ -1188,21 +1234,22 @@
       return document.scrollingElement || document.documentElement || document.body;
     }
 
-    function syncDesktopLayoutMetrics(force) {
+    function syncDesktopLayoutMetrics() {
       if (!desktopMq.matches) {
         root.style.removeProperty("--mini-v2-browse-table-width");
         scheduleDetailMarqueeSync(0);
         return;
       }
 
-      if (!force && root.classList.contains("mini-v2-has-detail")) {
-        return;
-      }
-
       const listWrap = tableScrollNode ? tableScrollNode.querySelector(".mini-v2-list-wrap") : null;
       if (!listWrap) return;
 
-      const width = Math.round(listWrap.getBoundingClientRect().width);
+      // Measure the full workspace, not the shrinking pane during its slide.
+      const tableCard = root.querySelector(".mini-v2-table-card");
+      const insets = tableCard.getBoundingClientRect().width - listWrap.getBoundingClientRect().width;
+      const detailStyle = getComputedStyle(detailPanelNode);
+      const closedBorder = parseFloat(detailStyle.borderLeftWidth) + parseFloat(detailStyle.borderRightWidth);
+      const width = Math.round(workspaceNode.getBoundingClientRect().width - insets - closedBorder);
       if (width > 0) {
         root.style.setProperty("--mini-v2-browse-table-width", `${width}px`);
       }
@@ -1220,7 +1267,7 @@
         }
 
         detailWidthSyncTimer = setTimeout(function () {
-          syncDesktopLayoutMetrics(true);
+          syncDesktopLayoutMetrics();
           detailWidthSyncTimer = null;
         }, 0);
       }
@@ -1252,6 +1299,7 @@
         }
 
         textNode.style.transform = "translateX(0)";
+        if (reducedMotionMq.matches) return;
 
         const overflowAmount = Math.ceil(textNode.scrollWidth - node.clientWidth);
         if (overflowAmount <= 1) return;
@@ -1460,6 +1508,8 @@
       group.copies.forEach(copy => {
         if (copy.currentLocation !== copy.home) {
           state.draftLocations[copy.id] = copy.home;
+        } else {
+          delete state.draftLocations[copy.id];
         }
       });
     }

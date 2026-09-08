@@ -1652,6 +1652,16 @@
     }
   }
 
+  @media (min-width: 980px) and (max-width: 1279px) {
+    .mini-v2-has-detail .mini-v2-search-row {
+      grid-template-columns: minmax(0, 1fr) max-content;
+    }
+
+    .mini-v2-has-detail .mini-v2-search-row > .mini-v2-field:first-child {
+      grid-column: 1 / -1;
+    }
+  }
+
   @media (max-width: 1019px) {
     .mini-v2-top-card-body {
       align-items: flex-start;
@@ -1691,14 +1701,33 @@
     }
 
     .mini-v2-list-wrap {
-      width: auto;
+      width: 100%;
       min-width: 0;
+      overflow-x: auto;
     }
 
     .mini-v2-browse-table {
       width: 100%;
-      min-width: 0;
+      min-width: 1020px;
       max-width: none;
+    }
+
+    .mini-v2-copy-table-shell {
+      min-width: 0;
+      overflow-x: auto;
+    }
+
+    .mini-v2-detail-panel,
+    .mini-v2-detail-group {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .mini-v2-copy-grid {
+      min-width: 0;
+    }
+
+    .mini-v2-copy-table {
+      min-width: 640px;
     }
 
     .mini-v2-detail-card {

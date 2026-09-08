@@ -1,11 +1,21 @@
 function doGet() {
   var template = HtmlService.createTemplateFromFile("Index");
-  template.initialStateJson = JSON.stringify(buildMockAppState_());
+  template.initialStateJson = serializeInitialState_(buildMockAppState_());
 
   return template
     .evaluate()
     .setTitle("PPQ Miniature Tracker")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function serializeInitialState_(value) {
+  // JSON lives inside a script element; a cell must never close that element.
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 function include(filename) {

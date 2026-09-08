@@ -1,10 +1,33 @@
 # September 2026 Recalibration
 
 Reviewed 2026-09-07 against commit `217a0d7` (`Refine detail pane inventory layout`).
-The worktree was clean at the start. This review changes documentation only.
+The worktree was clean at the start. The initial review changed documentation only;
+the follow-up stabilization below implements the confirmed fixes.
 
 This is the current handoff. Earlier design documents preserve useful history,
 but their proposed layouts and step numbers sometimes conflict with the accepted UI.
+
+## Stabilization Follow-Up (2026-09-07)
+
+Implemented and verified with `tests/regression.cjs` in local headless Chrome:
+
+- Initial JSON escapes script-sensitive characters and preserves the original data.
+- Set All Home clears staged-away moves for copies saved at home and stages home for saved-away copies.
+- Desktop table width derives from the full workspace and fixed pane insets, not the narrowing browse pane. Opening, resizing, closing, and crossing the desktop breakpoint retain the width model.
+- Copy edits, sort changes, and facet selections preserve keyboard focus across rerenders.
+- A global Unsaved button reveals pending work, including filtered-out groups. Leaving with pending edits requests the browser's standard warning.
+- The top notice explicitly explains mock-only, reload-limited saves.
+- Intermediate-width search gets its own row when details are open. Smaller screens scroll the tables instead of squeezing their columns. This is a functional fallback, not a complete mobile redesign.
+- Marquee respects reduced-motion preferences. Group notes expose the full text through a tooltip; a touch/keyboard-friendly note reader remains future work.
+- Missing paint is no longer incorrectly labeled Unpainted; only explicit false gets that tag.
+
+All eight regression scenarios passed, with no browser script errors. Desktop
+screenshot reviewed. Authenticated Apps Script browser behavior still needs the
+owner's `/dev` test; no real sheet reads/writes were added. Historical findings
+below describe the pre-fix state, not outstanding bugs unless noted here.
+
+The [command and feedback reference](../development.md) explains Git, clasp,
+development URLs, and a short browser feedback session.
 
 ## Where We Actually Are
 
