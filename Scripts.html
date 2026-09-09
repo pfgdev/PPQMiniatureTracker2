@@ -685,7 +685,7 @@
         const copyLabel = copy ? `${copy.sticker || `No sticker, copy ${copy.miniNumber}`}, ${group.name}` : "";
         return `
           <tr class="mini-v2-row ${selected ? "is-selected" : ""} ${dirty ? "has-pending-copy" : ""}" data-group-id="${escapeHtml(group.rootId)}"${copy ? ` data-copy-id="${escapeHtml(copy.id)}" aria-label="${escapeHtml(copyLabel)}${dirty ? ", unsaved location change" : ""}"` : ""}${selected ? ' aria-current="true"' : ""} tabindex="0">
-            <td class="mini-v2-cell mini-v2-cell-avail">
+            <td class="mini-v2-cell mini-v2-cell-avail${!copy && group.total >= 100 ? " has-wide-count" : ""}">
               ${copy
                 ? `<span class="mini-v2-individual-id" title="${escapeHtml(copyLabel)}${dirty ? "; unsaved location change" : ""}">${escapeHtml(copy.sticker || "No ID")}</span>`
                 : `<span class="mini-v2-count mini-v2-count--browse ${statusClass(status)}" title="${group.available} of ${group.total} available">${group.available}/${group.total}</span>`}
@@ -897,6 +897,8 @@
 
     function syncDetailCopyTarget() {
       detailContentNode.querySelectorAll("[data-detail-copy-id]").forEach(row => {
+        if (state.browseMode === "individuals") row.tabIndex = 0;
+        else row.removeAttribute("tabindex");
         const selected = state.browseMode === "individuals" && !!state.selectedRootId
           && row.dataset.detailCopyId === state.selectedCopyId;
         row.classList.toggle("is-target", selected);
@@ -978,21 +980,8 @@
         switchBrowseMode(viewButton.dataset.browseMode);
         return;
       }
-      const clickedInsideLocationCombobox = !!(clickTarget && clickTarget.closest("#miniV2LocationCombobox"));
-      const clickedInsideFacetShell = !!(clickTarget && clickTarget.closest("#miniV2FacetShell"));
-      const shouldCloseLocationMenu = state.locationMenuOpen && !clickedInsideLocationCombobox;
-
-      if (shouldCloseLocationMenu) {
-        state.locationMenuOpen = false;
-        state.locationMenuSearch = "";
-        renderLocationFilter();
-      }
-
-      if (state.openFacetKey && !clickedInsideFacetShell) {
-        state.openFacetKey = "";
-        renderFacetBar();
-        renderFacetFlyout();
-      }
+      // Dismissing a popover must not also trigger document-level inspector dismissal.
+      if (dismissOutsidePopovers(clickTarget)) event.stopPropagation();
 
       const actionButton = event.target.closest("button[data-action]");
       if (actionButton && root.contains(actionButton)) {
@@ -1121,6 +1110,14 @@
         }
       }
 
+      const detailRow = clickTarget && clickTarget.closest("[data-detail-copy-id]");
+      if (detailRow && state.browseMode === "individuals"
+        && !clickTarget.closest("button, input, select, textarea, a, label")) {
+        event.stopPropagation();
+        selectDetailCopy(detailRow.dataset.detailCopyId);
+        return;
+      }
+
       const clickedRow = event.target.closest("tr[data-group-id]");
       if (clickedRow && root.contains(clickedRow)) {
         event.stopPropagation();
@@ -1206,6 +1203,14 @@
         return;
       }
 
+      const detailRow = event.target.closest("[data-detail-copy-id]");
+      if (detailRow && event.target === detailRow && state.browseMode === "individuals"
+        && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        selectDetailCopy(detailRow.dataset.detailCopyId);
+        return;
+      }
+
       const row = event.target.closest("tr[data-group-id]");
       if (!row) return;
       if (event.key === "Enter" || event.key === " ") {
@@ -1214,22 +1219,29 @@
       }
     }
 
-    function handleDocumentClick(event) {
-      const target = event && event.target;
+    function dismissOutsidePopovers(target) {
+      let dismissed = false;
       if (state.locationMenuOpen && target instanceof Element && !target.closest("#miniV2LocationCombobox")) {
+        dismissed = true;
         state.locationMenuOpen = false;
         state.locationMenuSearch = "";
         renderLocationFilter();
       }
       if (state.openFacetKey && target instanceof Element && !target.closest("#miniV2FacetShell")) {
+        dismissed = true;
         state.openFacetKey = "";
         renderFacetBar();
         renderFacetFlyout();
       }
-      if (state.detailPointerDownInside) {
-        state.detailPointerDownInside = false;
-        return;
-      }
+      return dismissed;
+    }
+
+    function handleDocumentClick(event) {
+      const target = event && event.target;
+      const dismissed = dismissOutsidePopovers(target);
+      const detailPointerDownInside = state.detailPointerDownInside;
+      state.detailPointerDownInside = false;
+      if (dismissed || detailPointerDownInside) return;
       if (!root.classList.contains("mini-v2-has-detail")) return;
       if (isDetailPersistentClickTarget(target)) return;
       clearSelectedGroup();
@@ -1323,7 +1335,35 @@
       state.openFacetKey = "";
       state.locationMenuOpen = false;
       state.locationMenuSearch = "";
+      if (mode === "individuals" && state.selectedRootId) {
+        const candidates = getBrowseRows().filter(row => row.group.rootId === state.selectedRootId);
+        const selected = candidates.find(row => row.copy.id === state.selectedCopyId) || candidates[0];
+        state.selectedCopyId = selected ? selected.copy.id : "";
+      }
       renderAllPreservingScroll(scroll, { keepSelection: true, keepDetail: true });
+      if (mode === "individuals" && state.selectedCopyId) revealBrowseCopy(state.selectedCopyId, true);
+    }
+
+    function selectDetailCopy(copyId) {
+      if (!getSelectedGroup()?.copies.some(copy => copy.id === copyId)) return;
+      clearTimeout(copyRevealTimer);
+      state.selectedCopyId = copyId;
+      renderAllPreservingScroll(null, { keepSelection: true, keepDetail: true });
+      revealBrowseCopy(copyId);
+    }
+
+    function revealBrowseCopy(copyId, positionWithContext = false) {
+      const row = Array.from(tableScrollNode.querySelectorAll("tr[data-copy-id]"))
+        .find(node => node.dataset.copyId === copyId);
+      if (!row) return; // Keep filters intact when the inspector selects a hidden sibling.
+      const bounds = row.getBoundingClientRect();
+      const viewport = tableScrollNode.getBoundingClientRect();
+      if (!positionWithContext && bounds.top >= viewport.top && bounds.bottom <= viewport.bottom) return;
+      const context = Math.min(bounds.height * 4, Math.max(0, tableScrollNode.clientHeight - bounds.height));
+      const scroll = captureScrollState();
+      scroll.tableTop += bounds.top - viewport.top - context;
+      // Use the existing restoration mechanism so a pending frame cannot undo the reveal.
+      restoreScrollState(scroll);
     }
 
     function scheduleCopyReveal(copyId) {

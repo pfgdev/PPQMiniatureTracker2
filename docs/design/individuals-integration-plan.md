@@ -4,11 +4,12 @@ Prepared 2026-09-08 against `3c5a79d`. This is a code-grounded planning pass,
 not authorization to implement everything below. Integration here means wiring
 the approved selector into the mock application, NOT spreadsheet integration.
 
-## First Functional Build: Ready For UX Review
+## Current Status: Accepted For This Phase
 
-The user subsequently asked to start. The first mock-only implementation now
-includes the items below; the detailed original checklist remains the broader
-review/test backlog rather than a claim that this entire phase is complete.
+The user reviewed and accepted the mock-only Groups / Individuals refinements
+on September 9. This phase is closed out for now; shared-editing UX is next.
+The detailed original checklist remains historical planning and a broader
+review/test backlog, not a claim that every optional enhancement was implemented.
 
 - [x] State-driven Groups / Individuals switch, retaining the approved selector geometry.
 - [x] Nine group rows versus 28 independently identified copy rows, with centered sticker ID and current location plus Home/Away badge.
@@ -20,7 +21,26 @@ review/test backlog rather than a claim that this entire phase is complete.
 - [x] Mode-specific browse scroll memory, preserved detail/horizontal scroll, keyboard focus, and global Unsaved navigation.
 - [x] Saved-snapshot browse locations/filtering/sorting for this prototype; drafts stay in the inspector until mock Save. This follows the recommended default and is still an explicit UX review point, not a separately confirmed user decision. Groups' location filter now follows this same snapshot rule.
 - [x] Save/Reset/Set All Home retain group scope; action tooltips describe it. A saved copy leaving a filter does not abruptly close the inspector.
-- [x] Sixteen regression scenarios passed in local Chrome, including 600 synthetic copy rows and unchanged header/column/row geometry. No browser script errors.
+- [x] Twenty regression scenarios passed in local Chrome, including 600 synthetic copy rows and unchanged header/column/row geometry. No browser script errors.
+
+### September 9 UX Refinements
+
+- Entering Individuals with an inspected group restores a matching remembered copy, or selects the group's first copy in the current results. Reveal it near the fifth visible browse row when scroll limits allow; a short viewport prioritizes visibility. This takes precedence over old browse scroll memory when a copy is selected.
+- If filters exclude every copy, leave the parent inspector open without a copy highlight. Never clear filters to force a selection.
+- In Individuals, clicking a non-control part of an inspector copy row selects it in both tables and reveals its browse row if offscreen. Enter/Space on a focused copy row also selects it. Re-selecting does not close the inspector; dropdown interactions do not change selection. Hidden siblings can be selected in the inspector without changing browse filters.
+- Dismissing a facet or location popover with a background click leaves inspection and pending work intact. A subsequent background click retains the existing inspector-dismissal behavior.
+- Three-digit totals use tighter horizontal pill/cell padding, not smaller fonts or wider columns. Synthetic 99/100 -> 100/100 checks passed at 1440, 1100, 980, and 390px; full 100/100 pills fit without changing row heights or column positions. Larger digit counts are not yet a readability guarantee.
+- ID bubbles remain deferred as a separate visual experiment. The owner approved scrolling/selection and popover dismissal in browser review; all behavior remains mock-only.
+
+### Accepted Popover Click-Through Behavior
+
+Investigated September 9 and deliberately left as-is after owner review:
+
+- Clicking blank space while a facet/location popover is open dismisses that popover without closing the inspector. This is the owner's main use case and is covered by regression tests.
+- Clicking an actual browse row behind/outside the popover also performs that row's normal action. A different row selects it; the already-selected row can close inspection. The owner does not currently consider this a bug.
+- `handleRootClick` calls `dismissOutsidePopovers` and stops event propagation, preventing `handleDocumentClick` from also dismissing inspection. It intentionally continues through the root handler, so explicit row/button actions still execute. `stopPropagation()` alone cannot suppress those later statements in the same handler.
+- If accidental row actions become a problem, consume the dismissal click before row selection: retain the helper's boolean result and return before the browse/detail row handlers for the applicable targets. Decide separately whether explicit controls (filter switches, dropdowns, Close) should retain their normal action; do not turn all popovers into modal blockers by accident.
+- Before changing that policy, add regression cases for different-row and already-selected-row clicks with each popover open, plus ordinary row clicks after dismissal. Keep blank-space dismissal, staged changes, and dropdown behavior covered. No further change is scheduled unless use reveals a problem.
 
 Deliberate first-pass tradeoff: the location label and badge share a fixed
 180px content frame within the existing third track, leaving the badge intact
@@ -29,10 +49,11 @@ tooltip. This does not change any column widths or pane ratio; it does need
 visual approval, especially for Mounts & Misc. Creatures. The existing narrower
 desktop pane still clips most or all of the third column.
 
-Remaining: user review of this build, long-location treatment, draft feedback
-and group-action clarity, broader device/zoom/manual checks, and any desired
-Away-only or exact-sticker-navigation follow-up. Shared editing, creation,
-sticker management, and all spreadsheet integration remain out of scope.
+Nonblocking follow-ups: long-location treatment, draft feedback and group-action
+clarity, broader device/zoom/manual checks, and any desired Away-only or exact-
+sticker-navigation enhancement. Next phase is shared-editing UX, separately
+scoped before implementation. Creation, sticker management, and spreadsheet
+integration remain later work.
 
 ## Scope And Success
 
@@ -130,7 +151,7 @@ every detail. The review gates below identify the meaningful tradeoffs.
 - [ ] Clicking a different sibling keeps the inspector open and changes the target copy. Clicking the SAME selected copy may retain the current click-again-to-close behavior; test both mouse and keyboard.
 - [ ] Only the selected individual row gets the primary selected highlight. Do not highlight all siblings because their root matches. A group-only selection may have no highlighted individual until a copy is chosen.
 - [ ] Switching Individuals -> Groups retains the parent. Switching back can recover the last selected visible copy of that parent; never select an unrelated first result merely to fill the panel.
-- [ ] When switching from a group with no chosen copy, keep group details without arbitrarily focusing the first child. Explicit individual selection is what reveals a specific copy.
+- [x] Updated September 9: when switching from a group with no chosen copy, select its first matching copy and reveal it in browse with context. Restore a remembered matching copy when possible; preserve filters when there is no match.
 - [ ] Keep the full group inspector and all its copies visible even when the browse list is filtered to one copy. Do not turn shared metadata into per-copy metadata.
 - [ ] Add a stable identifier and a non-color-only accessible indication to the target inspector row. Choose restrained visual emphasis distinct from Away/Unsaved backgrounds.
 - [ ] On explicit copy selection, reveal only that row within the detail scroll host after DOM/layout is ready. Avoid scrolling the whole page or changing left-list position. Do not force keyboard focus into a select for a mouse selection.

@@ -9,13 +9,23 @@ but their proposed layouts and step numbers sometimes conflict with the accepted
 
 ## Current Direction: Mock-Only UX Development
 
-For the next implementation phase, start with the code-grounded
+For the completed browse phase, refer to the code-grounded
 [Groups / Individuals integration checklist](individuals-integration-plan.md).
 It covers the approved selector, proposed behavior, measured layout constraints,
 review gates, staged TODOs, and regression cases. The original deep dive changed
 only documentation. After the user asked to start, a first functional mock-only
 build was implemented; see its current progress section for behavior and remaining
-UX review points. The phase is not yet declared complete.
+UX review points. The owner accepted this phase on September 9; shared-editing
+UX is next, to be discussed in the next session before implementation.
+
+September 9 follow-up: mode entry now selects/reveals a matching copy, inspector
+rows support reciprocal selection in Individuals, popover dismissal no longer
+also closes inspection, and three-digit availability pills have compact padding.
+Twenty local regression scenarios pass; the owner confirmed scrolling, reciprocal
+selection, and blank-space popover dismissal work well. Popover clicks on actual
+rows still perform their normal action, deliberately accepted for now. The
+integration checklist records the rationale, handler mechanics, and a possible
+future consume-the-dismissal-click change if accidental actions become a problem.
 
 The user confirmed the current development app is running, and corrected the
 restart priorities after the stabilization pass:
@@ -41,7 +51,7 @@ This sequence incorporates the user's end-of-evening feedback. It is not a fixed
 screen specification or a list to implement in one pass. Each step is expected
 to involve substantial design, browser feedback, and iteration.
 
-1. **Groups / Individuals.** The approved segmented control remains beside Browse Minis with a 16px gap and a 1px downward optical nudge. A first functional mock build now switches rows, queries, sorts, and counts while retaining the same inspector and selected copy. Review long-location truncation and the proposed saved-until-mock-Save browse behavior before calling this phase complete. The detailed integration checklist records the implementation and remaining tests/review work.
+1. **Groups / Individuals: accepted September 9.** The approved segmented control remains beside Browse Minis with a 16px gap and a 1px downward optical nudge. Mode-specific rows, search, sorting, copy selection/reveal, and reciprocal inspector selection are implemented. The integration checklist records the accepted behavior and nonblocking follow-ups; no additional browse work is required before starting shared-editing design.
 2. **Shared editing.** Retain the user's strong direction: enter edit mode from the detail-header action area, edit shared miniature fields in place, and apply or cancel mock changes. Iterate on the editing experience before deciding how creation should work. Keep group-level edits distinct from individual-copy edits.
 3. **Add miniature.** Evaluate this after shared editing has been built and reviewed. Creation might reuse the same editor in a blank/new-entry state, including an editable name, rather than introducing a separate screen. A modal or drawer remains an option, not a commitment. Let experience with the editor reveal what additional controls or steps are actually needed.
 4. **Sticker assignment and management.** Follow the preceding flows, not in parallel with them. Individual group editing may offer manual assignment, but a dedicated batch workflow similar to the legacy experience will likely also be useful. When this step begins, the user will explain the pain points and the assistant will propose UX alternatives. Do not settle its detailed design now.
@@ -52,7 +62,7 @@ to involve substantial design, browser feedback, and iteration.
 - The assistant is responsible for interpreting intent, filling implementation gaps, and recommending well-fitting UX options. The user should not have to specify every control or pixel.
 - Work one interaction-sized slice at a time, review it in the browser, and revise before moving on. Completing an initial implementation does not complete the design step.
 - Preserve the existing visual language and stable table behavior where practical; do not treat the current layout as untouchable if a core workflow exposes a limitation.
-- The user first approved only the selector prototype, then requested a deep-dive plan, then explicitly asked to start integration. Current scope is the first functional mock-only Groups / Individuals build and its UX iterations, not the later editing/creation/sticker workflows.
+- The user accepted the Groups / Individuals refinements and asked to document/commit the result. Next session starts with shared-editing UX: agree the smallest Edit -> change shared fields -> Apply/Cancel interaction in the existing detail panel. Keep group metadata drafts distinct from pending copy-location changes, and decide how navigation/close handles unsaved edits. Do not start creation, sticker workflows, or persistence as part of that slice.
 
 ## Stabilization Follow-Up (2026-09-07)
 

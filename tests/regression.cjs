@@ -93,7 +93,7 @@ const firstCopy = '013-ZHESOL-01';
             columns: [...table.tHead.rows[0].cells].map(cell => cell.getBoundingClientRect().left)
           }));
           const originalGeometry = await tableGeometry();
-          const detail = await page.locator('#miniV2DetailContent').innerHTML();
+          await page.locator('.mini-v2-copy-select').evaluateAll(nodes => nodes.forEach(n => { n.__retained = true; }));
           const toggle = page.locator('[data-browse-mode="individuals"]');
           const before = await page.locator('.mini-v2-view-switch').boundingBox();
           await toggle.click();
@@ -108,7 +108,7 @@ const firstCopy = '013-ZHESOL-01';
               [...wrap.querySelectorAll('.mini-v2-copy-status')].every(badge => badge.getBoundingClientRect().right < wrap.getBoundingClientRect().right)
             ));
           }
-          assert.equal(await page.locator('#miniV2DetailContent').innerHTML(), detail);
+          assert.ok(await page.locator('.mini-v2-copy-select').evaluateAll(nodes => nodes.every(n => n.__retained)));
           const after = await page.locator('.mini-v2-view-switch').boundingBox();
           if (JSON.stringify(after) !== JSON.stringify(before) && process.env.SCREENSHOT_PATH) {
             await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-selector-failure.png') });
@@ -316,7 +316,13 @@ const firstCopy = '013-ZHESOL-01';
         detail: document.getElementById('miniV2DetailScroll').scrollTop,
         page: document.scrollingElement.scrollTop
       }));
-      assert.deepEqual(after, before);
+      assert.equal(after.detail, before.detail);
+      assert.equal(after.page, before.page);
+      assert.ok(await page.locator('.mini-v2-browse-table tr.is-selected').evaluate(row => {
+        const bounds = row.getBoundingClientRect();
+        const host = document.getElementById('miniV2TableScroll').getBoundingClientRect();
+        return bounds.top >= host.top && bounds.bottom <= host.bottom;
+      }));
       assert.equal(await select('048-SPIFOLFIG-10').inputValue(), 'Quest Minis');
       await action('reset-changes').click();
       await page.setViewportSize({ width: 390, height: 844 });
@@ -330,6 +336,143 @@ const firstCopy = '013-ZHESOL-01';
       await settle();
       assert.equal(await page.locator('.mini-v2-list-wrap').evaluate(n => n.scrollLeft), 180);
       assert.equal(await page.locator('.mini-v2-copy-table-shell').evaluate(n => n.scrollLeft), 90);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('popover dismissal preserves inspection and pending changes inside and outside the app', async () => {
+      await fresh();
+      await open(soldier);
+      await select(firstCopy).selectOption('Quest Minis');
+      for (const popover of ['facet', 'location']) {
+        for (const outsideApp of [false, true]) {
+          if (popover === 'facet') await page.locator('[data-facet-key="sizes"]').click();
+          else await action('toggle-location-menu').click();
+          await settle();
+          if (outsideApp) await page.mouse.click(1, 1);
+          else await page.locator('.mini-v2-list-header > span').first().click();
+          await settle();
+          assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Zhent Soldier');
+          assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+          assert.equal(await page.locator('#miniV2FacetPopover').isVisible(), false);
+          assert.equal(await action('toggle-location-menu').getAttribute('aria-expanded'), 'false');
+        }
+      }
+      // Without an open popover, the existing outside-click dismissal still works.
+      await page.mouse.click(1, 1);
+      await settle();
+      assert.equal(await page.locator('#miniV2Root').evaluate(n => n.classList.contains('mini-v2-has-detail')), false);
+    });
+
+    await check('Groups to Individuals selects a matching copy with four rows of context when possible', async () => {
+      await page.setViewportSize({ width: 1440, height: 650 });
+      await fresh();
+      await open(fighter);
+      await mode('individuals');
+      await settle();
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').getAttribute('data-copy-id'), '048-SPIFOLFIG-01');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-01');
+      const placement = await page.locator('.mini-v2-browse-table tr.is-selected').evaluate(row => ({
+        offset: row.getBoundingClientRect().top - document.getElementById('miniV2TableScroll').getBoundingClientRect().top,
+        height: row.getBoundingClientRect().height
+      }));
+      assert.ok(Math.abs(placement.offset - placement.height * 4) < 2);
+      await fresh();
+      await location('Quest Minis');
+      await open(fighter);
+      await mode('individuals');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-09');
+      await fresh();
+      await location('Dwarves');
+      await open('086-BREJAG');
+      await mode('individuals');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').count(), 0);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Bregol Jagstone');
+      assert.equal(await page.locator('.mini-v2-empty').count(), 1);
+      await fresh();
+      await page.locator('[data-sort-key="name"]').click();
+      await open(soldier);
+      await mode('individuals');
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').getAttribute('data-copy-id'), firstCopy);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('detail rows select copies both ways without hijacking dropdowns or clearing filters', async () => {
+      await page.setViewportSize({ width: 1440, height: 650 });
+      await fresh();
+      await open(fighter);
+      const row = id => page.locator(`[data-detail-copy-id="${id}"]`);
+      await row('048-SPIFOLFIG-02').locator('td').first().click();
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').count(), 0);
+      await mode('individuals');
+      await row('048-SPIFOLFIG-10').locator('td').first().click();
+      await settle();
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').getAttribute('data-copy-id'), '048-SPIFOLFIG-10');
+      assert.ok(await page.locator('.mini-v2-browse-table tr.is-selected').evaluate(row => {
+        const bounds = row.getBoundingClientRect();
+        const host = document.getElementById('miniV2TableScroll').getBoundingClientRect();
+        return bounds.top >= host.top && bounds.bottom <= host.bottom;
+      }));
+      await row('048-SPIFOLFIG-10').locator('td').first().click();
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Spirit Folk Fighter');
+      const scrollBefore = await page.locator('#miniV2TableScroll').evaluate(n => n.scrollTop);
+      await select('048-SPIFOLFIG-09').click();
+      await page.keyboard.press('Escape');
+      await select('048-SPIFOLFIG-09').selectOption('Spare People');
+      await settle();
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-10');
+      assert.equal(await page.locator('#miniV2TableScroll').evaluate(n => n.scrollTop), scrollBefore);
+      await row('048-SPIFOLFIG-08').focus();
+      await page.keyboard.press('Space');
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').getAttribute('data-copy-id'), '048-SPIFOLFIG-08');
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.detailCopyId), '048-SPIFOLFIG-08');
+      await location('Encounter Box G');
+      await page.locator('tr[data-copy-id="048-SPIFOLFIG-07"]').click();
+      await row('048-SPIFOLFIG-02').locator('td').first().click();
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-02');
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').count(), 0);
+      assert.deepEqual(await browseCopies(), ['048-SPIFOLFIG-07']);
+      assert.equal(await select('048-SPIFOLFIG-09').inputValue(), 'Spare People');
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('three-digit availability never changes browse column positions or row heights', async () => {
+      const large = JSON.parse(JSON.stringify(data));
+      const group = large.groups[0];
+      group.copies = Array.from({ length: 100 }, (_, i) => ({
+        ...group.copies[0], id: `stress-${i}`, sticker: `Z${i}`, currentLocation: i === 99 ? 'Quest Minis' : group.home
+      }));
+      const geometry = () => page.locator('.mini-v2-browse-table').evaluate(table => ({
+        columns: [...table.tHead.rows[0].cells].map(cell => cell.getBoundingClientRect().width),
+        height: table.tBodies[0].rows[0].getBoundingClientRect().height
+      }));
+      for (const width of [1440, 1100, 980, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        const baseline = await geometry();
+        await fresh(makeHtml(large));
+        assert.deepEqual(await geometry(), baseline);
+        assert.equal(await page.locator('.mini-v2-count--browse').first().innerText(), '99/100');
+        await open(soldier);
+        const opened = await geometry();
+        await action('set-all-home').click();
+        await action('save-changes').click();
+        await settle();
+        assert.deepEqual(await geometry(), opened);
+        const pill = page.locator('.mini-v2-count--browse').first();
+        assert.equal(await pill.innerText(), '100/100');
+        const sizing = await pill.evaluate(node => ({
+          pill: node.getBoundingClientRect().width,
+          cell: node.parentElement.getBoundingClientRect().width,
+          fits: node.getBoundingClientRect().left >= node.parentElement.getBoundingClientRect().left
+            && node.getBoundingClientRect().right <= node.parentElement.getBoundingClientRect().right
+        }));
+        assert.ok(sizing.fits, `100/100 fits at ${width}: ${JSON.stringify(sizing)}`);
+        if (process.env.SCREENSHOT_PATH) {
+          await page.locator('.mini-v2-browse-table tbody tr').first().screenshot({
+            path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-count-${width}.png`)
+          });
+        }
+      }
       await page.setViewportSize({ width: 1440, height: 1000 });
     });
 

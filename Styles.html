@@ -1089,6 +1089,15 @@
     position: relative;
   }
 
+  .mini-v2-copy-row[tabindex] {
+    cursor: pointer;
+  }
+
+  .mini-v2-copy-row:focus-visible {
+    outline: 2px solid var(--mini-v2-primary);
+    outline-offset: -2px;
+  }
+
   .mini-v2-copy-row.is-target > td::after {
     content: "";
     position: absolute;
@@ -1184,6 +1193,16 @@
     border-radius: 999px;
     font-size: 12px;
     line-height: 1;
+  }
+
+  .mini-v2-browse-table td.has-wide-count {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .mini-v2-browse-table .has-wide-count .mini-v2-count--browse {
+    padding-left: 1px;
+    padding-right: 1px;
   }
 
   .mini-v2-browse-table th.mini-v2-cell-avail { width: 6%; }
