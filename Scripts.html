@@ -53,6 +53,8 @@
     const state = {
       groups: INITIAL_STATE.groups.map((group, index) => enrichGroup({ ...group, originalOrder: index })),
       locations: INITIAL_STATE.locations.slice(),
+      browseMode: "groups",
+      browseScroll: { groups: null, individuals: null },
       search: "",
       locationFilter: "all",
       locationMenuOpen: false,
@@ -64,6 +66,7 @@
       },
       openFacetKey: "",
       selectedRootId: "",
+      selectedCopyId: "",
       draftLocations: {},
       detailPointerDownInside: false
     };
@@ -100,6 +103,8 @@
     let facetSwapTimer = null;
     let detailWidthSyncTimer = null;
     let detailMarqueeSyncTimer = null;
+    let copyRevealTimer = null;
+    let scrollRestoreVersion = 0;
 
     initMiniV2();
 
@@ -137,9 +142,9 @@
                 <div class="v2-card-header mini-v2-list-header">
                   <span>Browse Minis</span>
                   <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note" hidden></span>
-                  <div class="mini-v2-view-switch" role="group" aria-label="Browse view preview" title="Visual preview only; the table still shows groups">
-                    <button type="button" data-view-preview="groups" aria-pressed="true">Groups</button>
-                    <button type="button" data-view-preview="individuals" aria-pressed="false">Individuals</button>
+                  <div class="mini-v2-view-switch" role="group" aria-label="Browse view">
+                    <button type="button" data-browse-mode="groups" aria-pressed="true">Groups</button>
+                    <button type="button" data-browse-mode="individuals" aria-pressed="false">Individuals</button>
                   </div>
                 </div>
                 <div class="v2-card-body mini-v2-table-body">
@@ -280,7 +285,7 @@
       const total = copies.length;
       const checkedOut = total - available;
       const needsStickers = copies.some(copy => !copy.sticker);
-      const searchText = [
+      const sharedSearchText = [
         group.name,
         group.rootId,
         group.home,
@@ -292,31 +297,34 @@
         group.set,
         group.setNumber,
         group.notes
-      ]
+      ].join(" ").toLowerCase();
+      const searchText = [sharedSearchText]
         .concat(copies.map(copy => [copy.id, copy.sticker, copy.currentLocation, copy.note || ""].join(" ")))
         .join(" ")
         .toLowerCase();
 
-      return { ...group, copies, available, total, checkedOut, needsStickers, searchText };
+      return { ...group, copies, available, total, checkedOut, needsStickers, sharedSearchText, searchText };
     }
 
-    function renderAll() {
-      ensureSelectionVisibility();
+    function renderAll(options = {}) {
+      const rows = getBrowseRows();
+      if (!options.keepSelection) ensureSelectionVisibility(rows);
       const selectedGroup = getSelectedGroup();
       root.classList.toggle("mini-v2-has-detail", !!selectedGroup);
-      renderSummaryLane();
-      renderListHeader();
+      renderSummaryLane(rows.length);
+      renderListHeader(rows.length);
       renderLocationFilter();
       renderFacetBar();
       renderFacetFlyout();
-      renderTable();
-      renderDetail();
+      renderTable(rows);
+      if (!options.keepDetail) renderDetail();
+      syncDetailCopyTarget();
     }
 
-    function renderAllPreservingScroll(existingState) {
+    function renderAllPreservingScroll(existingState, options = {}) {
       const scrollState = existingState || captureScrollState();
       const restoreFocus = captureFocus();
-      renderAll();
+      renderAll(options);
       restoreFocus();
       restoreScrollState(scrollState);
       return scrollState;
@@ -340,31 +348,38 @@
       };
     }
 
-    function renderSummaryLane() {
-      const filtered = getFilteredGroups();
+    function renderSummaryLane(visibleCount) {
       const stickerWork = state.groups.filter(group => group.needsStickers).length;
       const dirtyCount = state.groups.reduce((count, group) => count + group.copies.filter(isDirty).length, 0);
 
       summaryLaneNode.innerHTML = `
         <span class="mini-v2-chip is-primary">Mock Data</span>
         <span class="mini-v2-chip">Groups ${state.groups.length}</span>
-        <span class="mini-v2-chip">Visible ${filtered.length}</span>
-        <span class="mini-v2-chip ${stickerWork ? "is-warn" : ""}">Sticker Work ${stickerWork}</span>
+        <span class="mini-v2-chip mini-v2-visible-count">Visible ${visibleCount} ${getBrowseUnit(visibleCount)}</span>
+        <span class="mini-v2-chip ${stickerWork ? "is-warn" : ""}" title="${stickerWork} groups with copies needing stickers">Sticker Work ${stickerWork}</span>
         ${dirtyCount ? `<button type="button" class="mini-v2-chip is-warn" data-action="review-changes" title="Open a miniature with pending location changes">Unsaved ${dirtyCount}</button>` : ""}
       `;
     }
 
-    function renderListHeader() {
-      const filtered = getFilteredGroups();
-      listHeaderNoteNode.textContent = filtered.length === 1
-        ? "1 miniature shown"
-        : `${filtered.length} miniatures shown`;
+    function getBrowseUnit(count) {
+      const unit = state.browseMode === "individuals" ? "individual" : "group";
+      return `${unit}${count === 1 ? "" : "s"}`;
+    }
+
+    function renderListHeader(visibleCount) {
+      listHeaderNoteNode.textContent = `${visibleCount} ${getBrowseUnit(visibleCount)} shown`;
+      root.querySelectorAll("button[data-browse-mode]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.browseMode === state.browseMode));
+      });
     }
 
     function renderLocationFilter() {
       searchInputNode.value = state.search;
       locationComboboxNode.classList.toggle("is-open", state.locationMenuOpen);
       locationLabelNode.textContent = state.locationFilter === "all" ? "All locations" : state.locationFilter;
+      const locationMeaning = state.browseMode === "individuals" ? "Current location" : "Home or current location";
+      locationTriggerNode.setAttribute("aria-label", `${locationMeaning}: ${locationLabelNode.textContent}`);
+      locationTriggerNode.title = `Filter by ${locationMeaning.toLowerCase()} (last saved locations)`;
       locationTriggerNode.setAttribute("aria-expanded", state.locationMenuOpen ? "true" : "false");
       locationTriggerNode.classList.toggle("is-active", state.locationFilter !== "all");
       locationTriggerNode.classList.toggle("is-open", state.locationMenuOpen);
@@ -651,27 +666,32 @@
       `;
     }
 
-    function renderTable() {
-      const groups = getFilteredGroups();
+    function renderTable(browseRows) {
+      const individuals = state.browseMode === "individuals";
 
-      if (!groups.length) {
+      if (!browseRows.length) {
         tableScrollNode.innerHTML = `
           <div class="mini-v2-list-wrap">
-            <div class="mini-v2-empty">No miniatures match those filters.</div>
+            <div class="mini-v2-empty">No ${getBrowseUnit(0)} match those filters.</div>
           </div>
         `;
         return;
       }
 
-      const rows = groups.map(group => {
+      const rows = browseRows.map(({ group, copy }) => {
         const status = getStatusKey(group);
+        const selected = group.rootId === state.selectedRootId && (!copy || copy.id === state.selectedCopyId);
+        const dirty = copy && isDirty(copy);
+        const copyLabel = copy ? `${copy.sticker || `No sticker, copy ${copy.miniNumber}`}, ${group.name}` : "";
         return `
-          <tr class="mini-v2-row ${group.rootId === state.selectedRootId ? "is-selected" : ""}" data-group-id="${escapeHtml(group.rootId)}" tabindex="0">
+          <tr class="mini-v2-row ${selected ? "is-selected" : ""} ${dirty ? "has-pending-copy" : ""}" data-group-id="${escapeHtml(group.rootId)}"${copy ? ` data-copy-id="${escapeHtml(copy.id)}" aria-label="${escapeHtml(copyLabel)}${dirty ? ", unsaved location change" : ""}"` : ""}${selected ? ' aria-current="true"' : ""} tabindex="0">
             <td class="mini-v2-cell mini-v2-cell-avail">
-              <span class="mini-v2-count mini-v2-count--browse ${statusClass(status)}" title="${group.available} of ${group.total} available">${group.available}/${group.total}</span>
+              ${copy
+                ? `<span class="mini-v2-individual-id" title="${escapeHtml(copyLabel)}${dirty ? "; unsaved location change" : ""}">${escapeHtml(copy.sticker || "No ID")}</span>`
+                : `<span class="mini-v2-count mini-v2-count--browse ${statusClass(status)}" title="${group.available} of ${group.total} available">${group.available}/${group.total}</span>`}
             </td>
             <td class="mini-v2-cell mini-v2-cell-name"><div class="mini-v2-name" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</div></td>
-            <td class="mini-v2-cell mini-v2-cell-home" title="${escapeHtml(group.home)}">${escapeHtml(group.home)}</td>
+            <td class="mini-v2-cell mini-v2-cell-home">${copy ? renderBrowseCopyLocation(copy) : `<span title="${escapeHtml(group.home)}">${escapeHtml(group.home)}</span>`}</td>
             <td class="mini-v2-cell mini-v2-cell-size" title="${escapeHtml(group.size)}">${escapeHtml(group.size)}</td>
             <td class="mini-v2-cell mini-v2-cell-type" title="${escapeHtml(group.creatureType)}">${escapeHtml(group.creatureType)}</td>
             <td class="mini-v2-cell mini-v2-cell-race" title="${escapeHtml(group.race || "n/a")}">${escapeHtml(group.race || "n/a")}</td>
@@ -683,12 +703,12 @@
 
       tableScrollNode.innerHTML = `
         <div class="mini-v2-list-wrap">
-          <table class="mini-v2-table mini-v2-browse-table" aria-label="Miniature inventory">
+          <table class="mini-v2-table mini-v2-browse-table${individuals ? " is-individuals" : ""}" aria-label="${individuals ? "Individual miniatures" : "Miniature groups"}">
             <thead>
               <tr>
-                ${renderSortHeader("mini-v2-cell-avail", "avail", "#", "Available")}
+                ${renderSortHeader("mini-v2-cell-avail", individuals ? "sticker" : "avail", individuals ? "ID" : "#", individuals ? "Sticker ID" : "Available")}
                 ${renderSortHeader("mini-v2-cell-name", "name", "Name")}
-                ${renderSortHeader("mini-v2-cell-home", "home", "Home")}
+                ${renderSortHeader("mini-v2-cell-home", individuals ? "currentLocation" : "home", individuals ? "Current Location" : "Home")}
                 ${renderSortHeader("mini-v2-cell-size", "size", "Size")}
                 ${renderSortHeader("mini-v2-cell-type", "type", "Type")}
                 ${renderSortHeader("mini-v2-cell-race", "race", "Race")}
@@ -698,6 +718,18 @@
             </thead>
             <tbody>${rows}</tbody>
           </table>
+        </div>
+      `;
+    }
+
+    function renderBrowseCopyLocation(copy) {
+      const away = copy.currentLocation !== copy.home;
+      const label = away ? "Away" : "Home";
+      const title = `${copy.currentLocation} (${label}); home: ${copy.home}${isDirty(copy) ? `; pending move to ${getEffectiveLocation(copy)} (not saved)` : ""}`;
+      return `
+        <div class="mini-v2-individual-location" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+          <span class="mini-v2-individual-location-label">${escapeHtml(copy.currentLocation)}</span>
+          <span class="mini-v2-copy-status ${away ? "is-away" : "is-home"}">${label}</span>
         </div>
       `;
     }
@@ -761,9 +793,9 @@
             </section>
             ${renderCopyGrid(group.copies)}
             <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
-              <button class="button mini-v2-copy-btn" type="button" data-action="reset-changes"${dirtyCount ? "" : " disabled"}>Reset</button>
-              <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="set-all-home"${canSetAllHome ? "" : " disabled"}>Set All Home</button>
-              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-changes"${dirtyCount ? "" : " disabled"}>Save Changes</button>
+              <button class="button mini-v2-copy-btn" type="button" data-action="reset-changes" title="Discard pending location changes for this entire group"${dirtyCount ? "" : " disabled"}>Reset</button>
+              <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="set-all-home" title="Stage all ${group.total} copies in this group home, including copies outside the browse filter"${canSetAllHome ? "" : " disabled"}>Set All Home</button>
+              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-changes" title="Apply all pending location changes for this group in mock memory only"${dirtyCount ? "" : " disabled"}>Save Changes</button>
             </div>
           </section>
 
@@ -850,7 +882,7 @@
           : '<span class="mini-v2-copy-status is-home">Home</span>';
 
       return `
-        <tr class="mini-v2-copy-row ${away ? "is-away" : ""} ${dirty ? "is-dirty" : ""}">
+        <tr class="mini-v2-copy-row ${away ? "is-away" : ""} ${dirty ? "is-dirty" : ""}" data-detail-copy-id="${escapeHtml(copy.id)}">
           <td>${escapeHtml(copy.sticker || "Needs sticker")}</td>
           <td>${statusMarkup}</td>
           <td>
@@ -861,6 +893,21 @@
           <td class="mini-v2-copy-note-cell" title="${escapeHtml(noteValue || "No individual note")}">${escapeHtml(noteValue || "—")}</td>
         </tr>
       `;
+    }
+
+    function syncDetailCopyTarget() {
+      detailContentNode.querySelectorAll("[data-detail-copy-id]").forEach(row => {
+        const selected = state.browseMode === "individuals" && !!state.selectedRootId
+          && row.dataset.detailCopyId === state.selectedCopyId;
+        row.classList.toggle("is-target", selected);
+        if (selected) {
+          row.setAttribute("aria-current", "true");
+          row.setAttribute("aria-label", "Selected miniature copy");
+        } else {
+          row.removeAttribute("aria-current");
+          row.removeAttribute("aria-label");
+        }
+      });
     }
 
     function renderCopyGrid(copies) {
@@ -925,13 +972,10 @@
 
     function handleRootClick(event) {
       const clickTarget = event.target instanceof Element ? event.target : null;
-      const viewPreviewButton = clickTarget && clickTarget.closest("button[data-view-preview]");
-      if (viewPreviewButton && root.contains(viewPreviewButton)) {
-        // Visual prototype only: do not change application state or rerender.
+      const viewButton = clickTarget && clickTarget.closest("button[data-browse-mode]");
+      if (viewButton && root.contains(viewButton)) {
         event.stopPropagation();
-        viewPreviewButton.parentElement.querySelectorAll("button").forEach(button => {
-          button.setAttribute("aria-pressed", String(button === viewPreviewButton));
-        });
+        switchBrowseMode(viewButton.dataset.browseMode);
         return;
       }
       const clickedInsideLocationCombobox = !!(clickTarget && clickTarget.closest("#miniV2LocationCombobox"));
@@ -970,13 +1014,16 @@
           const currentIndex = dirtyGroups.findIndex(group => group.rootId === state.selectedRootId);
           const group = dirtyGroups[(currentIndex + 1) % dirtyGroups.length];
           if (!group) return;
-          if (!getFilteredGroups().some(visible => visible.rootId === group.rootId)) {
+          const dirtyCopy = group.copies.find(isDirty);
+          if (!getBrowseRows().some(row => row.group.rootId === group.rootId && (!row.copy || row.copy.id === dirtyCopy.id))) {
             state.search = "";
             state.locationFilter = "all";
             state.filtersApplied = createEmptyFilterState();
           }
           state.selectedRootId = group.rootId;
-          renderAllPreservingScroll();
+          state.selectedCopyId = state.browseMode === "individuals" ? dirtyCopy.id : "";
+          renderAllPreservingScroll(null, { keepSelection: true });
+          if (state.selectedCopyId) scheduleCopyReveal(state.selectedCopyId);
           return;
         }
 
@@ -1056,19 +1103,20 @@
 
         if (action === "reset-changes") {
           resetSelectedDraftChanges();
-          renderAllPreservingScroll();
+          renderAllPreservingScroll(null, { keepSelection: true });
           return;
         }
 
         if (action === "set-all-home") {
           stageSelectedCopiesHome();
-          renderAllPreservingScroll();
+          renderAllPreservingScroll(null, { keepSelection: true });
           return;
         }
 
         if (action === "save-changes") {
           saveSelectedDraftChanges();
-          renderAllPreservingScroll();
+          state.browseScroll = { groups: null, individuals: null };
+          renderAllPreservingScroll(null, { keepSelection: true });
           return;
         }
       }
@@ -1077,10 +1125,14 @@
       if (clickedRow && root.contains(clickedRow)) {
         event.stopPropagation();
         const rootId = clickedRow.getAttribute("data-group-id");
+        const copyId = clickedRow.getAttribute("data-copy-id") || "";
         if (!rootId) return;
-        if (rootId !== state.selectedRootId) {
+        if (rootId !== state.selectedRootId || (copyId && copyId !== state.selectedCopyId)) {
+          clearTimeout(copyRevealTimer);
           state.selectedRootId = rootId;
+          state.selectedCopyId = copyId;
           renderAllPreservingScroll();
+          if (copyId) scheduleCopyReveal(copyId);
           return;
         }
         clearSelectedGroup();
@@ -1116,7 +1168,7 @@
         } else {
           state.draftLocations[copy.id] = nextLocation;
         }
-        renderAllPreservingScroll();
+        renderAllPreservingScroll(null, { keepSelection: true });
       }
     }
 
@@ -1212,14 +1264,18 @@
         hostTop: host ? host.scrollTop : 0,
         hostLeft: host ? host.scrollLeft : 0,
         tableTop: tableScrollNode ? tableScrollNode.scrollTop : null,
-        detailTop: detailScrollNode ? detailScrollNode.scrollTop : null
+        tableLeft: tableScrollNode?.querySelector(".mini-v2-list-wrap")?.scrollLeft || 0,
+        detailTop: detailScrollNode ? detailScrollNode.scrollTop : null,
+        detailTableLeft: detailContentNode?.querySelector(".mini-v2-copy-table-shell")?.scrollLeft || 0
       };
     }
 
     function restoreScrollState(scrollState) {
       if (!scrollState) return;
+      const version = ++scrollRestoreVersion;
 
       const apply = function () {
+        if (version !== scrollRestoreVersion) return;
         const host = scrollState.host || getPrimaryScrollHost();
         if (host) {
           if (Math.abs((host.scrollTop || 0) - (scrollState.hostTop || 0)) > 1) {
@@ -1237,10 +1293,52 @@
         if (detailScrollNode && scrollState.detailTop !== null) {
           detailScrollNode.scrollTop = scrollState.detailTop;
         }
+        const listWrap = tableScrollNode?.querySelector(".mini-v2-list-wrap");
+        if (listWrap) listWrap.scrollLeft = scrollState.tableLeft || 0;
+        const copyShell = detailContentNode?.querySelector(".mini-v2-copy-table-shell");
+        if (copyShell) copyShell.scrollLeft = scrollState.detailTableLeft || 0;
       };
 
       apply();
       requestAnimationFrame(apply);
+    }
+
+    function browseScrollKey() {
+      return JSON.stringify([state.search, state.locationFilter, state.filtersApplied, state.sort]);
+    }
+
+    function switchBrowseMode(mode) {
+      if (!["groups", "individuals"].includes(mode) || mode === state.browseMode) return;
+      clearTimeout(copyRevealTimer);
+      const scroll = captureScrollState();
+      state.browseScroll[state.browseMode] = { key: browseScrollKey(), top: scroll.tableTop, left: scroll.tableLeft };
+      state.browseMode = mode;
+      if (!["name", "size", "type", "race", "sex", "role"].includes(state.sort.key)) {
+        state.sort = { key: "", direction: "" };
+      }
+      const previous = state.browseScroll[mode];
+      const restorePrevious = previous && previous.key === browseScrollKey();
+      scroll.tableTop = restorePrevious ? previous.top : 0;
+      scroll.tableLeft = restorePrevious ? previous.left : 0;
+      state.openFacetKey = "";
+      state.locationMenuOpen = false;
+      state.locationMenuSearch = "";
+      renderAllPreservingScroll(scroll, { keepSelection: true, keepDetail: true });
+    }
+
+    function scheduleCopyReveal(copyId) {
+      clearTimeout(copyRevealTimer);
+      // Wait for the pane slide and the normal scroll restoration to finish.
+      copyRevealTimer = setTimeout(() => {
+        if (state.selectedCopyId !== copyId || !getSelectedGroup()) return;
+        const row = Array.from(detailContentNode.querySelectorAll("[data-detail-copy-id]"))
+          .find(node => node.dataset.detailCopyId === copyId);
+        if (!row || !desktopMq.matches) return;
+        const bounds = row.getBoundingClientRect();
+        const viewport = detailScrollNode.getBoundingClientRect();
+        if (bounds.bottom > viewport.bottom - 8) detailScrollNode.scrollTop += bounds.bottom - viewport.bottom + 8;
+        else if (bounds.top < viewport.top + 8) detailScrollNode.scrollTop += bounds.top - viewport.top - 8;
+      }, 260);
     }
 
     function getPrimaryScrollHost() {
@@ -1348,8 +1446,7 @@
         if (state.locationFilter !== "all") {
           const matchesLocation = group.home === state.locationFilter
             || group.copies.some(copy => {
-              const effectiveLocation = state.draftLocations[copy.id] || copy.currentLocation;
-              return effectiveLocation === state.locationFilter;
+              return copy.currentLocation === state.locationFilter;
             });
           if (!matchesLocation) return false;
         }
@@ -1362,15 +1459,54 @@
       return sortGroups(filteredGroups);
     }
 
-    function matchesStructuredFilters(group, filterState) {
+    function matchesStructuredFilters(group, filterState, copy = null) {
       if (filterState.sizes.length && !filterState.sizes.includes(group.size || "n/a")) return false;
       if (filterState.creatureTypes.length && !filterState.creatureTypes.includes(group.creatureType || "n/a")) return false;
       if (filterState.roles.length && !filterState.roles.includes(group.role || "n/a")) return false;
       if (filterState.sexes.length && !filterState.sexes.includes(group.sex || "n/a")) return false;
       if (filterState.races.length && !filterState.races.includes(group.race || "n/a")) return false;
       if (filterState.paintedOnly && !group.paint) return false;
-      if (filterState.needsStickersOnly && !group.needsStickers) return false;
+      if (filterState.needsStickersOnly && (copy ? !!copy.sticker : !group.needsStickers)) return false;
       return true;
+    }
+
+    function getBrowseRows() {
+      if (state.browseMode === "groups") return getFilteredGroups().map(group => ({ group, copy: null }));
+      const search = state.search.trim().toLowerCase();
+      const rows = [];
+      state.groups.forEach(group => {
+        group.copies.forEach((copy, copyOrder) => {
+          if (!matchesStructuredFilters(group, state.filtersApplied, copy)) return;
+          if (state.locationFilter !== "all" && copy.currentLocation !== state.locationFilter) return;
+          const searchText = [group.sharedSearchText, copy.id, copy.sticker, copy.currentLocation, copy.note || ""].join(" ").toLowerCase();
+          if (search && !searchText.includes(search)) return;
+          rows.push({ group, copy, copyOrder });
+        });
+      });
+      return sortIndividualRows(rows);
+    }
+
+    function sortIndividualRows(rows) {
+      const { key, direction } = state.sort;
+      if (!key || !direction) return rows;
+      const multiplier = direction === "desc" ? -1 : 1;
+      return rows.slice().sort((left, right) => {
+        let comparison;
+        if (key === "sticker") {
+          // Unassigned copies stay last in either direction; sticker text is not identity.
+          const missingDifference = Number(!left.copy.sticker) - Number(!right.copy.sticker);
+          if (missingDifference) return missingDifference;
+          comparison = compareText(left.copy.sticker, right.copy.sticker);
+        } else if (key === "currentLocation") {
+          comparison = compareText(left.copy.currentLocation, right.copy.currentLocation);
+        } else {
+          comparison = compareGroupsBySortKey(left.group, right.group, key);
+        }
+        return comparison * multiplier
+          || compareText(left.group.name, right.group.name)
+          || left.group.originalOrder - right.group.originalOrder
+          || left.copyOrder - right.copyOrder;
+      });
     }
 
     function createEmptyFilterState() {
@@ -1485,17 +1621,22 @@
       return state.groups.find(group => group.rootId === state.selectedRootId) || null;
     }
 
-    function ensureSelectionVisibility() {
+    function ensureSelectionVisibility(rows) {
       if (!state.selectedRootId) return;
-      const selectedStillVisible = getFilteredGroups().some(group => group.rootId === state.selectedRootId);
+      const selectedStillVisible = rows.some(row => row.group.rootId === state.selectedRootId
+        && (!row.copy || !state.selectedCopyId || row.copy.id === state.selectedCopyId));
       if (!selectedStillVisible) {
         state.selectedRootId = "";
+        state.selectedCopyId = "";
+        clearTimeout(copyRevealTimer);
       }
     }
 
     function clearSelectedGroup() {
       if (!state.selectedRootId) return;
       state.selectedRootId = "";
+      state.selectedCopyId = "";
+      clearTimeout(copyRevealTimer);
       renderAllPreservingScroll();
     }
 

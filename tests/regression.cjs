@@ -55,8 +55,14 @@ const firstCopy = '013-ZHESOL-01';
     const action = name => page.locator(`[data-action="${name}"]`);
     const tableWidth = () => page.locator('.mini-v2-browse-table').evaluate(node => node.getBoundingClientRect().width);
     const check = async (name, test) => { await test(); console.log(`PASS ${name}`); };
+    const mode = value => page.locator(`[data-browse-mode="${value}"]`).click();
+    const browseCopies = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(rows => rows.map(row => row.dataset.copyId));
+    const location = async value => {
+      await action('toggle-location-menu').click();
+      await page.locator(`[data-location-value="${value}"]`).click();
+    };
 
-    await check('view selector is visual-only and preserves the original header height', async () => {
+    await check('view selector changes rows but preserves header geometry and inspector', async () => {
       for (const width of [1440, 1100, 980, 390]) {
         await page.setViewportSize({ width, height: 1000 });
         await fresh();
@@ -82,13 +88,26 @@ const firstCopy = '013-ZHESOL-01';
           assert.equal(measurements.height, measurements.originalHeight, `header height at ${width}, open=${detailOpen}`);
           assert.ok(measurements.inside && measurements.labelsFit);
           assert.ok(Math.abs(measurements.titleGap - 16) < 1, `title gap at ${width}, open=${detailOpen}`);
-          const table = await page.locator('.mini-v2-browse-table').innerHTML();
+          const tableGeometry = () => page.locator('.mini-v2-browse-table').evaluate(table => ({
+            rowHeight: table.tBodies[0].rows[0].getBoundingClientRect().height,
+            columns: [...table.tHead.rows[0].cells].map(cell => cell.getBoundingClientRect().left)
+          }));
+          const originalGeometry = await tableGeometry();
           const detail = await page.locator('#miniV2DetailContent').innerHTML();
-          const toggle = page.locator('[data-view-preview="individuals"]');
+          const toggle = page.locator('[data-browse-mode="individuals"]');
           const before = await page.locator('.mini-v2-view-switch').boundingBox();
           await toggle.click();
           assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
-          assert.equal(await page.locator('.mini-v2-browse-table').innerHTML(), table);
+          assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), 28);
+          assert.equal(await page.locator('.mini-v2-browse-table th').first().innerText(), 'ID');
+          assert.equal(await page.locator('.mini-v2-browse-table th').nth(2).innerText(), 'CURRENT LOCATION');
+          assert.match(await page.locator('#miniV2SummaryLane').innerText(), /Visible 28 individuals/i);
+          assert.deepEqual(await tableGeometry(), originalGeometry);
+          if (width >= 1280 && detailOpen) {
+            assert.ok(await page.locator('.mini-v2-list-wrap').evaluate(wrap =>
+              [...wrap.querySelectorAll('.mini-v2-copy-status')].every(badge => badge.getBoundingClientRect().right < wrap.getBoundingClientRect().right)
+            ));
+          }
           assert.equal(await page.locator('#miniV2DetailContent').innerHTML(), detail);
           const after = await page.locator('.mini-v2-view-switch').boundingBox();
           if (JSON.stringify(after) !== JSON.stringify(before) && process.env.SCREENSHOT_PATH) {
@@ -96,13 +115,241 @@ const firstCopy = '013-ZHESOL-01';
           }
           assert.deepEqual(after, before, `selector bounds at ${width}, open=${detailOpen}`);
           assert.equal(await page.locator('#miniV2Root').evaluate(n => n.classList.contains('mini-v2-has-detail')), detailOpen);
-          await page.locator('[data-view-preview="groups"]').focus();
+          await page.locator('[data-browse-mode="groups"]').focus();
           await page.keyboard.press('Space');
-          assert.equal(await page.locator('[data-view-preview="groups"]').getAttribute('aria-pressed'), 'true');
+          assert.equal(await page.locator('[data-browse-mode="groups"]').getAttribute('aria-pressed'), 'true');
+          assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), 9);
         }
         if (process.env.SCREENSHOT_PATH) await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-selector-${width}.png`) });
       }
       await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('individual search and location filters match the same copy, not its siblings', async () => {
+      await fresh();
+      await mode('individuals');
+      await page.locator('#miniV2SearchInput').fill(' a12 ');
+      assert.deepEqual(await browseCopies(), [firstCopy]);
+      await page.locator('#miniV2SearchInput').fill('C16');
+      await location('Quest Minis');
+      assert.equal(await page.locator('.mini-v2-empty').innerText(), 'No individuals match those filters.');
+      await mode('groups');
+      assert.equal(await page.locator('.mini-v2-name').innerText(), 'Spirit Folk Fighter');
+      await mode('individuals');
+      await action('clear-filters').click();
+      for (const [place, expected] of [
+        ['Encounter Box G', ['048-SPIFOLFIG-07']],
+        ['Quest Minis', ['086-BREJAG-01', '048-SPIFOLFIG-09']],
+        ['Dwarves', []],
+        ['Drow', ['121-DRORAN-01', '121-DRORAN-02']]
+      ]) {
+        await location(place);
+        assert.deepEqual(await browseCopies(), expected);
+      }
+      await location('Spare People');
+      assert.equal((await browseCopies()).length, 18);
+      await page.locator('#miniV2SearchInput').fill('Zhent Soldier');
+      assert.equal((await browseCopies()).length, 3);
+      await action('clear-filters').click();
+      assert.equal(await page.locator('[data-browse-mode="individuals"]').getAttribute('aria-pressed'), 'true');
+    });
+
+    await check('copy identity drives selection; siblings stay open and no-ID copies remain distinct', async () => {
+      await fresh();
+      await mode('individuals');
+      const clickCopy = async id => { await page.locator(`tr[data-copy-id="${id}"]`).click(); await settle(); };
+      await clickCopy(firstCopy);
+      await clickCopy('013-ZHESOL-02');
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Zhent Soldier');
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').getAttribute('data-copy-id'), '013-ZHESOL-02');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '013-ZHESOL-02');
+      await mode('groups');
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').getAttribute('data-group-id'), soldier);
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').count(), 0);
+      assert.equal(await page.locator('.mini-v2-copy-row[aria-current]').count(), 0);
+      await mode('individuals');
+      assert.equal(await page.locator('.mini-v2-browse-table tr.is-selected').getAttribute('data-copy-id'), '013-ZHESOL-02');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '013-ZHESOL-02');
+      await page.locator('tr[data-copy-id="013-ZHESOL-02"]').focus();
+      await page.keyboard.press('Enter');
+      await settle();
+      assert.equal(await page.locator('#miniV2Root').evaluate(n => n.classList.contains('mini-v2-has-detail')), false);
+      await clickCopy('121-DRORAN-01');
+      await clickCopy('121-DRORAN-02');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '121-DRORAN-02');
+      await action('close-detail').click();
+      await page.locator('#miniV2SearchInput').fill('C16');
+      await clickCopy('048-SPIFOLFIG-07');
+      assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 10);
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-07');
+    });
+
+    await check('copy highlight hides in Groups and follows final-row corners without changing table layout', async () => {
+      await fresh();
+      await mode('individuals');
+      for (const [copyId, rounded, label] of [
+        ['086-BREJAG-01', true, 'single'],
+        ['013-ZHESOL-01', false, 'first'],
+        ['048-SPIFOLFIG-07', false, 'middle'],
+        ['048-SPIFOLFIG-10', true, 'last']
+      ]) {
+        await page.locator(`tr[data-copy-id="${copyId}"]`).click();
+        await settle();
+        const geometry = () => page.locator('.mini-v2-copy-table').evaluate(table => ({
+          width: table.getBoundingClientRect().width,
+          height: table.getBoundingClientRect().height,
+          rows: [...table.rows].map(row => ({
+            height: row.getBoundingClientRect().height,
+            cells: [...row.cells].map(cell => cell.getBoundingClientRect().width)
+          }))
+        }));
+        const selectedGeometry = await geometry();
+        const border = await page.locator('.mini-v2-copy-row.is-target').evaluate(row => {
+          const style = getComputedStyle(row.lastElementChild, '::after');
+          return { radius: style.borderBottomRightRadius, top: style.borderTopRightRadius, pointer: style.pointerEvents };
+        });
+        assert.equal(border.radius, rounded ? '9px' : '0px');
+        assert.equal(border.top, '0px');
+        assert.equal(border.pointer, 'none');
+        await select(copyId).evaluate(node => { node.__retainedAcrossModes = true; });
+        if (process.env.SCREENSHOT_PATH) {
+          await page.locator('.mini-v2-copy-table-shell').screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-highlight-${label}.png`) });
+        }
+        await mode('groups');
+        assert.equal(await page.locator('.mini-v2-copy-row.is-target, .mini-v2-copy-row[aria-current]').count(), 0);
+        assert.equal(await select(copyId).evaluate(node => node.__retainedAcrossModes), true);
+        assert.deepEqual(await geometry(), selectedGeometry);
+        await mode('individuals');
+        assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), copyId);
+        assert.equal(await select(copyId).evaluate(node => node.__retainedAcrossModes), true);
+        assert.deepEqual(await geometry(), selectedGeometry);
+      }
+    });
+
+    await check('pending moves preserve saved browse locations, group action scope, and filtered-out inspector', async () => {
+      await fresh();
+      await mode('individuals');
+      await location('Encounter Box G');
+      await page.locator('tr[data-copy-id="048-SPIFOLFIG-07"]').click();
+      await settle();
+      await select('048-SPIFOLFIG-07').focus();
+      await select('048-SPIFOLFIG-07').selectOption('Spare People');
+      assert.deepEqual(await browseCopies(), ['048-SPIFOLFIG-07']);
+      assert.equal(await page.locator('.mini-v2-individual-location-label').innerText(), 'Encounter Box G');
+      assert.equal(await page.locator('.mini-v2-individual-location .mini-v2-copy-status').innerText(), 'AWAY');
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.copyId), '048-SPIFOLFIG-07');
+      await mode('groups');
+      assert.equal(await page.locator('.mini-v2-name').innerText(), 'Spirit Folk Fighter');
+      await mode('individuals');
+      await action('reset-changes').click();
+      assert.equal(await select('048-SPIFOLFIG-07').inputValue(), 'Encounter Box G');
+      await action('set-all-home').click();
+      assert.equal(await select('048-SPIFOLFIG-09').inputValue(), 'Spare People');
+      assert.match(await action('review-changes').innerText(), /2/);
+      await action('save-changes').click();
+      assert.equal((await browseCopies()).length, 0);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Spirit Folk Fighter');
+      assert.equal(await page.locator('#miniV2Root').evaluate(n => n.classList.contains('mini-v2-has-detail')), true);
+      await select('048-SPIFOLFIG-01').selectOption('Quest Minis');
+      await action('review-changes').click();
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-01');
+      assert.equal(await page.locator('#miniV2LocationLabel').innerText(), 'All locations');
+      await action('reset-changes').click();
+    });
+
+    await check('individual sorts are natural and shared filters do not leak assigned siblings', async () => {
+      const extra = JSON.parse(JSON.stringify(data));
+      extra.groups[0].copies[0].sticker = 'A12';
+      extra.groups[0].copies[1].sticker = 'A2';
+      extra.groups[0].copies[2].sticker = '';
+      await fresh(makeHtml(extra));
+      await page.locator('[data-sort-key="avail"]').click();
+      await mode('individuals');
+      assert.equal(await page.locator('th[aria-sort="descending"]').count(), 0);
+      await page.locator('#miniV2SearchInput').fill('Zhent Soldier');
+      const stickers = () => page.locator('.mini-v2-individual-id').allTextContents();
+      await page.locator('[data-sort-key="sticker"]').click();
+      assert.deepEqual(await stickers(), ['A2', 'A12', 'No ID']);
+      await page.locator('[data-sort-key="sticker"]').click();
+      assert.deepEqual(await stickers(), ['A12', 'A2', 'No ID']);
+      await page.locator('[data-sort-key="sticker"]').click();
+      assert.deepEqual(await browseCopies(), ['013-ZHESOL-01', '013-ZHESOL-02', '013-ZHESOL-03']);
+      await page.locator('[data-facet-key="more"]').click();
+      await page.locator('[data-facet-flag="needsStickersOnly"]').click();
+      assert.deepEqual(await browseCopies(), ['013-ZHESOL-03']);
+      await mode('groups');
+      assert.equal(await page.locator('.mini-v2-name').innerText(), 'Zhent Soldier');
+      await mode('individuals');
+      await action('clear-filters').click();
+      await page.locator('[data-sort-key="size"]').click();
+      assert.equal(await page.locator('.mini-v2-name').last().innerText(), 'Warhorse');
+      await page.locator('[data-sort-key="size"]').click();
+      assert.equal(await page.locator('.mini-v2-name').first().innerText(), 'Warhorse');
+      await mode('groups');
+      assert.equal(await page.locator('[data-sort-key="size"]').getAttribute('aria-label'), 'Sort by Size, currently descending');
+    });
+
+    await check('copy reveal is local and mode switches preserve independent scroll and pending work', async () => {
+      await page.setViewportSize({ width: 1440, height: 650 });
+      await fresh();
+      await mode('individuals');
+      await page.locator('tr[data-copy-id="048-SPIFOLFIG-10"]').click();
+      await settle();
+      assert.ok(await page.locator('.mini-v2-copy-row.is-target').evaluate(row => {
+        const target = row.getBoundingClientRect();
+        const host = document.getElementById('miniV2DetailScroll').getBoundingClientRect();
+        return target.top >= host.top && target.bottom <= host.bottom;
+      }));
+      await select('048-SPIFOLFIG-10').selectOption('Quest Minis');
+      await settle();
+      await page.locator('#miniV2TableScroll').evaluate(n => { n.scrollTop = 120; });
+      const before = await page.evaluate(() => ({
+        browse: document.getElementById('miniV2TableScroll').scrollTop,
+        detail: document.getElementById('miniV2DetailScroll').scrollTop,
+        page: document.scrollingElement.scrollTop
+      }));
+      await mode('groups');
+      await mode('individuals');
+      await settle();
+      const after = await page.evaluate(() => ({
+        browse: document.getElementById('miniV2TableScroll').scrollTop,
+        detail: document.getElementById('miniV2DetailScroll').scrollTop,
+        page: document.scrollingElement.scrollTop
+      }));
+      assert.deepEqual(after, before);
+      assert.equal(await select('048-SPIFOLFIG-10').inputValue(), 'Quest Minis');
+      await action('reset-changes').click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await fresh();
+      await mode('individuals');
+      await page.locator('tr[data-copy-id="013-ZHESOL-01"]').click();
+      await settle();
+      await page.locator('.mini-v2-list-wrap').evaluate(n => { n.scrollLeft = 180; });
+      await page.locator('.mini-v2-copy-table-shell').evaluate(n => { n.scrollLeft = 90; });
+      await select(firstCopy).selectOption('Quest Minis');
+      await settle();
+      assert.equal(await page.locator('.mini-v2-list-wrap').evaluate(n => n.scrollLeft), 180);
+      assert.equal(await page.locator('.mini-v2-copy-table-shell').evaluate(n => n.scrollLeft), 90);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('larger synthetic results retain distinct IDs and safe rendering', async () => {
+      const large = JSON.parse(JSON.stringify(data));
+      large.groups = Array.from({ length: 600 }, (_, index) => {
+        const source = data.groups[index % data.groups.length];
+        return { ...source, rootId: `synthetic-${index}`, copies: [{ ...source.copies[0], id: `synthetic-${index}-01` }] };
+      });
+      large.groups[0].copies[0].sticker = '<img src=x onerror="window.__injected=true">';
+      large.groups[0].copies[0].currentLocation = '<script>window.__injected=true</script>';
+      await fresh(makeHtml(large));
+      await mode('individuals');
+      assert.equal((await browseCopies()).length, 600);
+      assert.equal(new Set(await browseCopies()).size, 600);
+      assert.equal(await page.locator('.mini-v2-individual-id').first().textContent(), large.groups[0].copies[0].sticker);
+      assert.equal(await page.evaluate(() => window.__injected), undefined);
+      assert.equal(await page.locator('.mini-v2-browse-table img, .mini-v2-browse-table script').count(), 0);
+      await page.locator('#miniV2SearchInput').fill('synthetic-598-01');
+      assert.deepEqual(await browseCopies(), ['synthetic-598-01']);
     });
 
     await check('safe initial data embedding and exact text round trip', async () => {
