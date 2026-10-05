@@ -735,6 +735,7 @@
   .mini-v2-field select,
   .mini-v2-combobox-trigger,
   .mini-v2-combobox-search,
+  .mini-v2-inventory-home-select,
   .mini-v2-copy-select {
     border: 1px solid var(--ppq-border-main);
     border-radius: 10px;
@@ -763,6 +764,7 @@
   .mini-v2-field select:focus,
   .mini-v2-combobox-trigger:focus,
   .mini-v2-combobox-search:focus,
+  .mini-v2-inventory-home-select:focus,
   .mini-v2-copy-select:focus {
     outline: 2px solid rgba(63, 111, 204, 0.22);
     border-color: #6f90ca;
@@ -1362,6 +1364,159 @@
     height: auto;
   }
 
+  .mini-v2-detail-header [hidden],
+  .mini-v2-editor [hidden] {
+    display: none !important;
+  }
+
+  .mini-v2-detail-card.is-editing .mini-v2-detail-header {
+    height: var(--mini-v2-editor-header-height);
+    min-height: var(--mini-v2-editor-header-height);
+  }
+
+  .mini-v2-editor-name {
+    flex: 1 1 0;
+    min-width: 0;
+    width: 100%;
+    height: 32px;
+    padding: 3px 8px;
+    font-family: inherit;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--mini-v2-ink);
+    border: 1px solid var(--mini-v2-edge);
+    border-radius: 7px;
+    background: #fff;
+  }
+
+  .mini-v2-editor-section-heading,
+  .mini-v2-editor-save-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .mini-v2-editor-scope,
+  .mini-v2-editor-save-note {
+    color: var(--mini-v2-muted);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .mini-v2-edit-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .mini-v2-editor .mini-v2-detail-grid {
+    row-gap: 24px;
+  }
+
+  .mini-v2-editor-paint {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    min-width: 0;
+    color: var(--ppq-text-primary);
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .mini-v2-editor-paint input {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--mini-v2-primary);
+    flex: 0 0 auto;
+  }
+
+  .mini-v2-editor-paint-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mini-v2-edit-field input,
+  .mini-v2-edit-field select,
+  .mini-v2-edit-field textarea,
+  .mini-v2-editor-copy-note {
+    min-width: 0;
+    width: 100%;
+    padding: 4px 7px;
+    border: 1px solid var(--mini-v2-edge);
+    border-radius: 7px;
+    background: #fff;
+    color: var(--ppq-text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 20px;
+  }
+
+  .mini-v2-edit-field input,
+  .mini-v2-edit-field select {
+    height: 34px;
+  }
+
+  .mini-v2-edit-field .mini-v2-editor-paint input {
+    width: 14px;
+    height: 14px;
+  }
+
+  .mini-v2-editor-copy-note {
+    height: 30px;
+  }
+
+  .mini-v2-edit-field textarea {
+    resize: vertical;
+    min-height: 78px;
+  }
+
+  .mini-v2-editor input:focus-visible,
+  .mini-v2-editor select:focus-visible,
+  .mini-v2-editor textarea:focus-visible,
+  .mini-v2-editor-name:focus-visible {
+    outline: 2px solid var(--mini-v2-primary);
+    outline-offset: 1px;
+  }
+
+  .mini-v2-editor-set,
+  .mini-v2-editor-set-labels {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 36px;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  #miniV2EditSetNumber {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .mini-v2-editor-home-note,
+  .mini-v2-editor-error {
+    margin: 0;
+    color: var(--mini-v2-warn-ink);
+    font-size: 12px;
+  }
+
+  .mini-v2-editor-footer {
+    display: grid;
+    gap: 8px;
+  }
+
+  @media (max-width: 600px) {
+    .mini-v2-editor-save-row {
+      flex-wrap: wrap;
+    }
+    .mini-v2-editor-save-row .mini-v2-inventory-actions {
+      margin-left: auto;
+    }
+  }
+
   .mini-v2-detail-scroll {
     min-height: 0;
     height: 100%;
@@ -1445,18 +1600,13 @@
     color: #5b6f8f;
   }
 
-  .mini-v2-summary-strip,
   .mini-v2-stat-grid,
   .mini-v2-meta-grid,
   .mini-v2-detail-grid,
+  .mini-v2-product-grid,
   .mini-v2-collection-grid {
     display: grid;
     gap: 10px;
-  }
-
-  .mini-v2-summary-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    align-items: stretch;
   }
 
   .mini-v2-stat-grid {
@@ -1467,8 +1617,13 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .mini-v2-detail-grid {
+  .mini-v2-detail-grid,
+  .mini-v2-product-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .mini-v2-set-field {
+    grid-column: span 2;
   }
 
   .mini-v2-collection-grid {
@@ -1537,32 +1692,92 @@
     gap: 8px;
   }
 
-  .mini-v2-inventory-card {
-    min-height: 0;
+  .mini-v2-inventory-summary {
+    display: grid;
+    grid-template-columns: calc(var(--mini-v2-copy-id-width) + var(--mini-v2-copy-status-width)) minmax(0, 1fr) var(--mini-v2-copy-note-width);
+    align-items: center;
+    min-width: 0;
+    background: #f2f7fc;
+    border-bottom: 1px solid var(--mini-v2-edge-soft);
   }
 
-  .mini-v2-inventory-card.is-success {
-    background: #f4fbf1;
-    border-color: var(--mini-v2-success-edge);
+  .mini-v2-inventory-availability {
+    display: inline-grid;
+    justify-items: center;
+    padding: 3px 8px;
+    font-size: 14px;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
   }
 
-  .mini-v2-inventory-card.is-warn {
-    background: #fffaf0;
-    border-color: var(--mini-v2-warn-edge);
+  .mini-v2-availability-wrap {
+    position: relative;
+    display: inline-flex;
   }
 
-  .mini-v2-inventory-card.is-danger {
-    background: #fff4f4;
-    border-color: var(--mini-v2-danger-edge);
+  .mini-v2-availability-count,
+  .mini-v2-availability-size {
+    grid-area: 1 / 1;
   }
 
-  .mini-v2-inventory-value {
-    color: #253652;
+  /* Reserve the maximum count's width without shifting the visible number. */
+  .mini-v2-availability-size {
+    visibility: hidden;
+  }
+
+  .mini-v2-availability-pending {
+    position: absolute;
+    left: calc(100% + 3px);
+    top: 0;
+    color: var(--mini-v2-warn-ink);
+    font-size: 12px;
+    visibility: hidden;
+  }
+
+  .mini-v2-availability-pending.is-visible {
+    visibility: visible;
+  }
+
+  .mini-v2-inventory-available,
+  .mini-v2-inventory-home {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding: 6px var(--mini-v2-copy-cell-padding);
+    min-width: 0;
+  }
+
+  .mini-v2-inventory-summary .mini-v2-field-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  .mini-v2-inventory-available {
+    text-align: left;
+  }
+
+  .mini-v2-inventory-available .mini-v2-inventory-summary-value {
+    justify-content: flex-start;
+  }
+
+  .mini-v2-inventory-summary-value {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    height: var(--mini-v2-copy-control-height);
+  }
+
+  .mini-v2-inventory-home .mini-v2-read-value {
+    width: 100%;
+    margin-top: 0;
+    font-size: 15px;
+    font-weight: 700;
   }
 
   .mini-v2-field-label,
   .mini-v2-read-value,
-  .mini-v2-inventory-value,
   .mini-v2-note-label {
     white-space: nowrap;
     overflow: hidden;
@@ -1599,10 +1814,6 @@
     align-content: start;
   }
 
-  .mini-v2-summary-spacer {
-    min-width: 0;
-  }
-
   .mini-v2-inventory-actions-row {
     display: flex;
     justify-content: flex-end;
@@ -1629,6 +1840,11 @@
   }
 
   .mini-v2-copy-grid {
+    --mini-v2-copy-id-width: 44px;
+    --mini-v2-copy-status-width: 88px;
+    --mini-v2-copy-note-width: 42%;
+    --mini-v2-copy-cell-padding: 7px;
+    --mini-v2-copy-control-height: 28px;
     display: block;
   }
 
@@ -1640,19 +1856,29 @@
     background: var(--ppq-surface-panel-strong);
   }
 
+  .mini-v2-copy-table-content {
+    min-width: 0;
+  }
+
+  .mini-v2-copy-table th,
+  .mini-v2-copy-table td {
+    padding-left: var(--mini-v2-copy-cell-padding);
+    padding-right: var(--mini-v2-copy-cell-padding);
+  }
+
   .mini-v2-copy-table th:first-child,
   .mini-v2-copy-table td:first-child {
-    width: 44px;
+    width: var(--mini-v2-copy-id-width);
   }
 
   .mini-v2-copy-table th:nth-child(2),
   .mini-v2-copy-table td:nth-child(2) {
-    width: 88px;
+    width: var(--mini-v2-copy-status-width);
   }
 
   .mini-v2-copy-table th:nth-child(4),
   .mini-v2-copy-table td:nth-child(4) {
-    width: 42%;
+    width: var(--mini-v2-copy-note-width);
   }
 
   .mini-v2-copy-table th {
@@ -1680,12 +1906,14 @@
     box-shadow: inset 0 0 0 9999px rgba(255, 235, 180, 0.72);
   }
 
-  .mini-v2-copy-select {
+  .mini-v2-copy-select,
+  .mini-v2-inventory-home-select {
     min-width: 0;
     width: 100%;
-    min-height: 28px;
+    height: var(--mini-v2-copy-control-height);
     padding: 4px 8px;
     font-size: 13px;
+    line-height: 1.3;
   }
 
   .mini-v2-copy-status {
@@ -1862,7 +2090,7 @@
       min-width: 0;
     }
 
-    .mini-v2-copy-table {
+    .mini-v2-copy-table-content {
       min-width: 640px;
     }
 
@@ -1895,8 +2123,7 @@
       padding: 0 0 14px;
     }
 
-    .mini-v2-search-row,
-    .mini-v2-summary-strip {
+    .mini-v2-search-row {
       grid-template-columns: 1fr;
       flex-direction: column;
       align-items: stretch;
@@ -1910,8 +2137,13 @@
     .mini-v2-stat-grid,
     .mini-v2-meta-grid,
     .mini-v2-detail-grid,
+    .mini-v2-product-grid,
     .mini-v2-collection-grid {
       grid-template-columns: 1fr;
+    }
+
+    .mini-v2-set-field {
+      grid-column: auto;
     }
 
     .v2-card-header {
@@ -1928,6 +2160,10 @@
     .mini-v2-table th,
     .mini-v2-table td {
       padding: 6px;
+    }
+
+    .mini-v2-copy-grid {
+      --mini-v2-copy-cell-padding: 6px;
     }
   }
 </style>

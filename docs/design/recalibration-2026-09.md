@@ -9,6 +9,56 @@ but their proposed layouts and step numbers sometimes conflict with the accepted
 
 ## Current Direction: Mock-Only UX Development
 
+**Current handoff, October 4:** the user returned to revisit the editor feedback.
+The local refinement pass makes Edit become Discard in the header, adds breathing
+room between the Details rows, and narrows Set # to a three-digit input. Following
+the next design discussion, both modes keep the character fields in three
+columns, followed by Set/Paint in their own Miniature group. Inventory now has
+its own heading and an attached summary band inside the table frame. Available
+shares ID's left inset, with the count centered inside its pill; Home matches both edges and the control styling of
+Current Location below, with shared column widths and horizontal scrolling.
+The tighter band uses quieter labels and a stronger read-only Home value.
+Availability remains visible in Edit and previews the shown locations. Its pill
+reserves the group's maximum count width; an external asterisk identifies unsaved
+changes without shifting the centered count. Set # is only counted as missing
+for a named set, not when Set is `n/a` or itself missing.
+Paint is a property beside Set, and Notes no longer has a redundant Additional
+heading. Close still retains a draft; Discard removes it and immediately returns
+to inspection. This remains a mock-only UX iteration,
+not approval to connect the sheet or start creation/sticker work.
+All 30 local Chrome regression scenarios pass, with desktop/mobile screenshots
+reviewed and no browser script errors. The owner accepted the latest layout for
+now, confirmed a clasp upload, and requested a Git checkpoint on October 4.
+
+Next: a short browser review of editing behavior (Save, Discard, closing and
+resuming drafts, shared fields/copy notes, and Home versus current locations).
+Then design Add Miniature using this editor as the starting point, including
+how to specify physical copies for a new group and add copies to an existing
+group. The creation flow remains to be discussed before implementation.
+
+Deferred TODO: revisit the passive top labels (Mock Data, Sticker Work, counts,
+etc.), their usefulness, and wrapping that increases header height and shifts
+the workspace down. This is part of the future
+[Header System Pass](ui-optimization-roadmap.md#14-header-system-pass), not this
+inspector iteration. Preserve the working draft/pending-change recovery actions.
+
+September 12: the user asked for the first editor prototype
+after clarifying cleanliness takes priority over exact layout replication, with
+familiar order still important. It is now implemented locally and ready for
+browser feedback. See [the editor prototype notes](shared-editing-options.md)
+for the actual controls, unified mock Save/Discard/draft-retention boundaries, Home-change
+behavior, and review targets. The historical planning below is not a reason to
+reopen the layout-options debate. Editing remains an iterative, unfinished phase.
+
+Latest feedback pass: edit fields now have labels and controls without backing
+cards, and Set is a controlled dropdown drawn from the current mock set list.
+The owner chose keeping drafts on close: no in-app native discard confirmation,
+Close/navigation retain unapplied drafts, and a Drafts button resumes them even
+through filters. Only Save applies changes; Discard removes the editor draft
+without erasing earlier location staging. Drafts remain memory-only until reload.
+All 27 local regression scenarios pass. Copy addition, sticker correction, and
+dropdown-catalog maintenance are recorded as future design work, not implemented.
+
 For the completed browse phase, refer to the code-grounded
 [Groups / Individuals integration checklist](individuals-integration-plan.md).
 It covers the approved selector, proposed behavior, measured layout constraints,
@@ -17,6 +67,26 @@ only documentation. After the user asked to start, a first functional mock-only
 build was implemented; see its current progress section for behavior and remaining
 UX review points. The owner accepted this phase on September 9; shared-editing
 UX is next, to be discussed in the next session before implementation.
+
+For that discussion, [Shared Editing: UX Options](shared-editing-options.md)
+compares in-place cards, a focused editor in the same sidebar, per-field editing,
+and a modal. It records draft/navigation/field-layout challenges and a proposed
+small first prototype. These are alternatives for review, not approved decisions.
+
+September 12 update: the user chose the focused editor in the same sidebar and
+provided read/edit screenshots from PPQ Loot Chests as the interaction reference.
+The outer pane/context stays stable while fields and header actions change for
+editing. The options document records the choice; an A/B layout comparison is
+no longer needed. Specific controls and save/navigation semantics remain to be
+worked through before a full implementation.
+
+Subsequent clarification: preserve the actual field order/grouping and shapes,
+not merely the sidebar outline. Keep the copy table with editable individual
+notes, keep group Notes below it, and retain the Size/Type/Race and Sex/Role/Set
+rows. The user suggests omitting Availability in edit mode and editing Home;
+continued location editing is a design choice. This supersedes the proposed
+copy-table removal and expands editing scope beyond shared fields. See the
+options document's clarification before using the older shared-only plan below.
 
 September 9 follow-up: mode entry now selects/reveals a matching copy, inspector
 rows support reciprocal selection in Individuals, popover dismissal no longer

@@ -50,9 +50,12 @@
       ]
     };
 
+    const EDIT_FIELDS = ["name", "size", "creatureType", "race", "sex", "role", "set", "setNumber", "home", "paint", "notes"];
+
     const state = {
       groups: INITIAL_STATE.groups.map((group, index) => enrichGroup({ ...group, originalOrder: index })),
       locations: INITIAL_STATE.locations.slice(),
+      sets: Array.from(new Set(INITIAL_STATE.groups.map(group => group.set).filter(Boolean))).sort(compareText),
       browseMode: "groups",
       browseScroll: { groups: null, individuals: null },
       search: "",
@@ -68,6 +71,8 @@
       selectedRootId: "",
       selectedCopyId: "",
       draftLocations: {},
+      editor: null,
+      editorDrafts: Object.create(null),
       detailPointerDownInside: false
     };
 
@@ -119,7 +124,7 @@
       new ResizeObserver(() => syncDesktopLayoutMetrics()).observe(workspaceNode);
       reducedMotionMq.addEventListener("change", () => scheduleDetailMarqueeSync(0));
       window.addEventListener("beforeunload", event => {
-        if (!state.groups.some(group => group.copies.some(isDirty))) return;
+        if (!editorDraftIds().length && !state.groups.some(group => group.copies.some(isDirty))) return;
         event.preventDefault();
         event.returnValue = "";
       });
@@ -216,9 +221,11 @@
                 <div class="v2-card-header mini-v2-detail-header">
                   <div class="mini-v2-detail-header-main">
                     <span id="miniV2DetailHeaderTitle">Mini Details</span>
+                    <input id="miniV2EditName" class="mini-v2-editor-name" data-edit-field="name" aria-label="Miniature name" hidden>
                     <div id="miniV2DetailHeaderTags" class="mini-v2-detail-tag-row"></div>
                   </div>
                   <div class="mini-v2-detail-header-actions">
+                    <button class="button mini-v2-detail-close" type="button" data-action="edit-mini" hidden>Edit</button>
                     <button id="miniV2DetailCloseButton" class="button mini-v2-detail-close" type="button" data-action="close-detail">Close</button>
                   </div>
                 </div>
@@ -307,6 +314,12 @@
     }
 
     function renderAll(options = {}) {
+      const resumedEditor = !state.editor && state.editorDrafts[state.selectedRootId];
+      if (resumedEditor) {
+        state.editor = resumedEditor;
+        delete state.editorDrafts[state.selectedRootId];
+        if (!state.selectedCopyId) state.selectedCopyId = state.editor.selectedCopyId || "";
+      }
       const rows = getBrowseRows();
       if (!options.keepSelection) ensureSelectionVisibility(rows);
       const selectedGroup = getSelectedGroup();
@@ -319,12 +332,17 @@
       renderTable(rows);
       if (!options.keepDetail) renderDetail();
       syncDetailCopyTarget();
+      return !!resumedEditor;
     }
 
     function renderAllPreservingScroll(existingState, options = {}) {
       const scrollState = existingState || captureScrollState();
       const restoreFocus = captureFocus();
-      renderAll(options);
+      const resumedEditor = renderAll(options);
+      if (resumedEditor && state.editor.editScroll) {
+        scrollState.detailTop = state.editor.editScroll.detailTop;
+        scrollState.detailTableLeft = state.editor.editScroll.detailTableLeft;
+      }
       restoreFocus();
       restoreScrollState(scrollState);
       return scrollState;
@@ -351,6 +369,7 @@
     function renderSummaryLane(visibleCount) {
       const stickerWork = state.groups.filter(group => group.needsStickers).length;
       const dirtyCount = state.groups.reduce((count, group) => count + group.copies.filter(isDirty).length, 0);
+      const draftCount = editorDraftIds().length;
 
       summaryLaneNode.innerHTML = `
         <span class="mini-v2-chip is-primary">Mock Data</span>
@@ -358,6 +377,7 @@
         <span class="mini-v2-chip mini-v2-visible-count">Visible ${visibleCount} ${getBrowseUnit(visibleCount)}</span>
         <span class="mini-v2-chip ${stickerWork ? "is-warn" : ""}" title="${stickerWork} groups with copies needing stickers">Sticker Work ${stickerWork}</span>
         ${dirtyCount ? `<button type="button" class="mini-v2-chip is-warn" data-action="review-changes" title="Open a miniature with pending location changes">Unsaved ${dirtyCount}</button>` : ""}
+        ${draftCount ? `<button type="button" class="mini-v2-chip is-warn" data-action="review-editor-drafts" title="Resume unapplied editor drafts. Drafts last until reload; only Save applies them.">Drafts ${draftCount}</button>` : ""}
       `;
     }
 
@@ -736,6 +756,34 @@
 
     function renderDetail() {
       const group = getSelectedGroup();
+      const editing = !!state.editor;
+      const editButton = root.querySelector('.mini-v2-detail-header-actions button:first-child');
+      editButton.hidden = !group;
+      editButton.textContent = editing ? "Discard" : "Edit";
+      editButton.dataset.action = editing ? "discard-edit" : "edit-mini";
+      editButton.title = editing ? "Discard this editor draft and return to details" : "Edit this miniature";
+      detailCloseButtonNode.textContent = "Close";
+      detailCloseButtonNode.dataset.action = "close-detail";
+      detailCloseButtonNode.title = editing ? "Close and keep your draft until reload" : "Close details";
+      detailPanelNode.classList.toggle("is-editing", editing);
+      detailHeaderTitleNode.hidden = editing;
+      const nameInput = document.getElementById("miniV2EditName");
+      nameInput.hidden = !editing;
+
+      if (group && editing) {
+        detailEmptyNode.hidden = true;
+        detailContentNode.hidden = false;
+        detailCloseButtonNode.disabled = false;
+        // Preserve live controls and caret positions across browse/filter rerenders.
+        if (detailContentNode.querySelector(".mini-v2-editor")?.dataset.editorRoot !== group.rootId) {
+          nameInput.removeAttribute("aria-invalid");
+          nameInput.removeAttribute("aria-describedby");
+          nameInput.value = state.editor.fields.name;
+          renderEditor(group);
+        }
+        syncEditorFeedback();
+        return;
+      }
 
       if (!group) {
         detailHeaderTitleNode.textContent = "Mini Details";
@@ -750,10 +798,7 @@
       const missingFieldLabels = getMissingFieldLabels(group);
       const missingFieldCount = missingFieldLabels.length;
       const canSetAllHome = group.copies.some(copy => getEffectiveLocation(copy) !== copy.home);
-      const availabilityTone = statusClass(getStatusKey(group));
-      const availabilitySummary = `${group.available} / ${group.total}`;
       const collectionSummary = getCollectionSummary(group);
-      const inventoryBlockClass = group.copies.length > 1 ? "mini-v2-inventory-block" : "mini-v2-inventory-block is-single-column";
       detailHeaderTitleNode.textContent = group.name;
       detailHeaderTagsNode.innerHTML = [
         missingFieldCount
@@ -763,7 +808,6 @@
             `Missing: ${missingFieldLabels.join(", ")}`
           )
           : renderDetailTag("Ready", "is-success"),
-        group.paint === false ? renderDetailTag("Unpainted", "is-neutral") : "",
         dirtyCount ? renderDetailTag(`Unsaved ${dirtyCount}`, "is-warn") : ""
       ].join("");
       detailCloseButtonNode.disabled = false;
@@ -780,18 +824,20 @@
               ${renderReadCard("Race", group.race || "n/a")}
               ${renderReadCard("Sex", group.sex)}
               ${renderReadCard("Role", group.role || "n/a")}
-              ${renderReadCard("Set", collectionSummary, { marquee: true })}
             </div>
           </section>
 
-          <section class="mini-v2-detail-group ${inventoryBlockClass}">
+          <section class="mini-v2-detail-group">
+            <div class="mini-v2-detail-group-title">Miniature</div>
+            <div class="mini-v2-product-grid">
+              ${renderReadCard("Set", collectionSummary, { marquee: true, wide: true })}
+              ${renderReadCard("Paint", typeof group.paint === "boolean" ? (group.paint ? "Painted" : "Unpainted") : "Not specified")}
+            </div>
+          </section>
+
+          <section class="mini-v2-detail-group mini-v2-inventory-block">
             <div class="mini-v2-detail-group-title">Inventory</div>
-            <section class="mini-v2-summary-strip">
-              ${renderInventoryCard("Availability", availabilitySummary, availabilityTone)}
-              ${renderInventoryCard("Home", group.home, "", { marquee: true })}
-              <div class="mini-v2-summary-spacer" aria-hidden="true"></div>
-            </section>
-            ${renderCopyGrid(group.copies)}
+            ${renderCopyGrid(group)}
             <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
               <button class="button mini-v2-copy-btn" type="button" data-action="reset-changes" title="Discard pending location changes for this entire group"${dirtyCount ? "" : " disabled"}>Reset</button>
               <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="set-all-home" title="Stage all ${group.total} copies in this group home, including copies outside the browse filter"${canSetAllHome ? "" : " disabled"}>Set All Home</button>
@@ -800,7 +846,6 @@
           </section>
 
           <section class="mini-v2-detail-group">
-            <div class="mini-v2-detail-group-title">Additional</div>
             <div class="mini-v2-note-card">
               <div class="mini-v2-note-label">Notes</div>
               <div class="mini-v2-note-body" title="${escapeHtml(group.notes || "No notes yet.")}">${escapeHtml(group.notes || "No notes yet.")}</div>
@@ -810,6 +855,247 @@
       `;
 
       scheduleDetailMarqueeSync(260);
+    }
+
+    function editorSnapshot(editor = state.editor) {
+      return editor ? JSON.stringify({ fields: editor.fields, copies: editor.copies }) : "";
+    }
+
+    function editorHasChanges() {
+      return !!state.editor && editorSnapshot() !== state.editor.initial;
+    }
+
+    function editorDraftIds() {
+      return Array.from(new Set([...Object.keys(state.editorDrafts), ...(editorHasChanges() ? [state.editor.rootId] : [])]));
+    }
+
+    function beginEditor() {
+      const group = getSelectedGroup();
+      if (!group || state.editor) return;
+      clearTimeout(copyRevealTimer);
+      clearTimeout(detailMarqueeSyncTimer);
+      detailPanelNode.style.setProperty("--mini-v2-editor-header-height", `${detailPanelNode.querySelector(".mini-v2-detail-header").getBoundingClientRect().height}px`);
+      document.getElementById("miniV2EditName").removeAttribute("aria-invalid");
+      document.getElementById("miniV2EditName").removeAttribute("aria-describedby");
+      state.editor = {
+        rootId: group.rootId,
+        fields: Object.fromEntries(EDIT_FIELDS.map(key => [key, key === "paint"
+          ? (typeof group.paint === "boolean" ? String(group.paint) : "") : String(group[key] ?? "")])),
+        copies: Object.fromEntries(group.copies.map(copy => [copy.id, {
+          note: copy.note || "", currentLocation: getEffectiveLocation(copy)
+        }])),
+        hasPendingLocations: group.copies.some(isDirty),
+        readScroll: captureScrollState()
+      };
+      state.editor.initial = editorSnapshot();
+      const scroll = captureScrollState();
+      scroll.detailTop = 0;
+      renderAllPreservingScroll(scroll, { keepSelection: true });
+      document.getElementById("miniV2EditName").focus({ preventScroll: true });
+    }
+
+    function leaveEditor() {
+      if (!state.editor) return true;
+      if (editorHasChanges()) {
+        state.editor.editScroll = captureScrollState();
+        state.editor.selectedCopyId = state.selectedCopyId;
+        state.editorDrafts[state.editor.rootId] = state.editor;
+      } else {
+        delete state.editorDrafts[state.editor.rootId];
+      }
+      state.editor = null;
+      return true;
+    }
+
+    function discardEditor() {
+      const scroll = state.editor?.readScroll;
+      if (!state.editor) return;
+      delete state.editorDrafts[state.editor.rootId];
+      state.editor = null;
+      const currentScroll = captureScrollState();
+      if (scroll) {
+        currentScroll.detailTop = scroll.detailTop;
+        currentScroll.detailTableLeft = scroll.detailTableLeft;
+      }
+      renderAllPreservingScroll(currentScroll, { keepSelection: true });
+      root.querySelector('[data-action="edit-mini"]').focus({ preventScroll: true });
+    }
+
+    function renderEditSelect(key, label, options) {
+      return `<label class="mini-v2-edit-field">
+        <span class="mini-v2-field-label">${escapeHtml(label)}</span>
+        <select data-edit-field="${key}" aria-label="${escapeHtml(label)}">${renderEditOptions(key, options)}</select>
+      </label>`;
+    }
+
+    function renderEditOptions(key, options) {
+      const value = state.editor.fields[key];
+      const choices = Array.from(new Set([...(key === "home" && value ? [] : [""]), ...options, value]));
+      return choices.map(option =>
+        `<option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(option || "Not specified")}</option>`).join("");
+    }
+
+    function renderEditor(group) {
+      const fields = state.editor.fields;
+      detailContentNode.innerHTML = `<div class="mini-v2-detail-panel mini-v2-editor" data-editor-root="${escapeHtml(group.rootId)}">
+        <section class="mini-v2-detail-group">
+          <div class="mini-v2-editor-section-heading">
+            <div class="mini-v2-detail-group-title">Details</div>
+            <span class="mini-v2-editor-scope">Shared by all ${group.total} ${group.total === 1 ? "copy" : "copies"}</span></div>
+          <div class="mini-v2-detail-grid">
+            ${renderEditSelect("size", "Size", FILTER_OPTIONS.sizes)}
+            ${renderEditSelect("creatureType", "Creature Type", FILTER_OPTIONS.creatureTypes)}
+            ${renderEditSelect("race", "Race", FILTER_OPTIONS.races)}
+            ${renderEditSelect("sex", "Sex", FILTER_OPTIONS.sexes)}
+            ${renderEditSelect("role", "Role", FILTER_OPTIONS.roles)}
+          </div>
+        </section>
+        <section class="mini-v2-detail-group">
+          <div class="mini-v2-detail-group-title">Miniature</div>
+          <div class="mini-v2-product-grid">
+            <div class="mini-v2-edit-field mini-v2-set-field">
+              <div class="mini-v2-editor-set-labels"><label class="mini-v2-field-label" for="miniV2EditSet">Set</label><label class="mini-v2-field-label" for="miniV2EditSetNumber">#</label></div>
+              <div class="mini-v2-editor-set"><select id="miniV2EditSet" data-edit-field="set" title="Set name">${renderEditOptions("set", state.sets)}</select>
+                <input id="miniV2EditSetNumber" data-edit-field="setNumber" aria-label="Set number" inputmode="numeric" maxlength="3" value="${escapeHtml(fields.setNumber)}"></div>
+            </div>
+            <div class="mini-v2-edit-field">
+              <span class="mini-v2-field-label">Paint</span>
+              <label class="mini-v2-editor-paint"><input type="checkbox" data-edit-field="paint" aria-label="Painted"${fields.paint === "true" ? " checked" : ""}>
+                <span class="mini-v2-editor-paint-value">Painted</span></label>
+            </div>
+          </div>
+        </section>
+        <section class="mini-v2-detail-group mini-v2-inventory-block">
+          <div class="mini-v2-detail-group-title">Inventory</div>
+          ${renderCopyGrid(group)}
+          <p class="mini-v2-editor-home-note" hidden>Changing Home does not move copies. Current locations stay as shown.</p>
+          <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
+            <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="edit-all-home">Set All Home</button>
+          </div>
+        </section>
+        <section class="mini-v2-detail-group">
+          <label class="mini-v2-edit-field"><span class="mini-v2-note-label">Notes</span>
+            <textarea data-edit-field="notes" aria-label="Group notes" rows="3">${escapeHtml(fields.notes)}</textarea></label>
+        </section>
+        <div class="mini-v2-editor-footer">
+          <p id="miniV2EditorError" class="mini-v2-editor-error" role="alert" hidden></p>
+          <div class="mini-v2-editor-save-row"><span class="mini-v2-editor-save-note">Applies details, copy notes &amp; locations</span>
+            <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
+              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-edit" title="Apply all shown details, copy notes, and locations for this group, including earlier pending locations, in mock memory only">Save Changes</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function editorCopy(copy) {
+      const draft = state.editor.copies[copy.id];
+      const group = getSelectedGroup();
+      return { ...copy, ...draft, home: state.editor.fields.home !== group.home ? state.editor.fields.home : copy.home };
+    }
+
+    function syncEditorFeedback() {
+      if (!state.editor) return;
+      const changed = editorHasChanges();
+      const paint = detailContentNode.querySelector('[data-edit-field="paint"]');
+      paint.checked = state.editor.fields.paint === "true";
+      paint.indeterminate = state.editor.fields.paint === "";
+      paint.setAttribute("aria-checked", paint.indeterminate ? "mixed" : String(paint.checked));
+      paint.title = paint.indeterminate ? "Paint status is not specified; check to mark painted" : "Paint status for all copies in this group";
+      detailContentNode.querySelector('.mini-v2-editor-paint-value').textContent = paint.indeterminate
+        ? "Not specified" : "Painted";
+      detailContentNode.querySelector('[data-edit-field="set"]').title = state.editor.fields.set || "Set not specified";
+      detailHeaderTagsNode.innerHTML = renderDetailTag(changed || state.editor.hasPendingLocations ? "Editing *" : "Editing", "is-neutral");
+      const save = detailContentNode.querySelector('[data-action="save-edit"]');
+      if (save) save.disabled = !changed && !state.editor.hasPendingLocations;
+      renderSummaryLane(getBrowseRows().length);
+      const group = getSelectedGroup();
+      detailContentNode.querySelector('.mini-v2-availability-wrap').outerHTML = renderInventoryAvailability(group);
+      const homeNote = detailContentNode.querySelector(".mini-v2-editor-home-note");
+      if (homeNote) homeNote.hidden = state.editor.fields.home === group.home;
+      const allHome = detailContentNode.querySelector('[data-action="edit-all-home"]');
+      if (allHome) allHome.disabled = !state.editor.fields.home || !group.copies.some(copy => {
+        const draft = editorCopy(copy);
+        return draft.currentLocation !== draft.home;
+      });
+      detailContentNode.querySelectorAll("[data-detail-copy-id]").forEach(row => {
+        const copy = group.copies.find(copy => copy.id === row.dataset.detailCopyId);
+        const draft = editorCopy(copy);
+        const away = draft.currentLocation !== draft.home;
+        const dirty = draft.currentLocation !== copy.currentLocation || draft.note !== (copy.note || "");
+        row.classList.toggle("is-away", away);
+        row.classList.toggle("is-dirty", dirty);
+        const badge = row.querySelector(".mini-v2-copy-status");
+        badge.className = `mini-v2-copy-status ${dirty ? "is-dirty" : away ? "is-away" : "is-home"}`;
+        badge.textContent = dirty ? "Unsaved" : away ? "Away" : "Home";
+      });
+    }
+
+    function updateEditorInput(target) {
+      if (!state.editor) return false;
+      const field = target.dataset.editField;
+      const copyId = target.dataset.editCopyNote;
+      if (field && EDIT_FIELDS.includes(field)) {
+        state.editor.fields[field] = field === "paint" && target.type === "checkbox" ? String(target.checked) : target.value;
+        if (field === "home") {
+          getSelectedGroup().copies.forEach(copy => {
+            const draft = editorCopy(copy);
+            const select = Array.from(detailContentNode.querySelectorAll("select[data-copy-id]"))
+              .find(node => node.dataset.copyId === copy.id);
+            select.innerHTML = renderCopyLocationOptions(draft, draft.currentLocation);
+          });
+        }
+        if (field === "name" || field === "setNumber") {
+          target.removeAttribute("aria-invalid");
+          target.removeAttribute("aria-describedby");
+          const error = document.getElementById("miniV2EditorError");
+          if (error) error.hidden = true;
+        }
+      } else if (copyId && state.editor.copies[copyId]) {
+        state.editor.copies[copyId].note = target.value;
+      } else return false;
+      syncEditorFeedback();
+      return true;
+    }
+
+    function saveEditor() {
+      const editor = state.editor;
+      if (!editor) return;
+      if (!editor.fields.name.trim()) {
+        const error = document.getElementById("miniV2EditorError");
+        error.hidden = false;
+        error.textContent = "Enter a miniature name before saving.";
+        const name = document.getElementById("miniV2EditName");
+        name.setAttribute("aria-invalid", "true");
+        name.setAttribute("aria-describedby", "miniV2EditorError");
+        name.focus({ preventScroll: true });
+        return;
+      }
+      const setNumber = editor.fields.setNumber.trim();
+      if (setNumber !== JSON.parse(editor.initial).fields.setNumber && !/^\d{0,3}$/.test(setNumber)) {
+        const error = document.getElementById("miniV2EditorError");
+        error.hidden = false;
+        error.textContent = "Use up to three digits for Set #.";
+        const number = document.getElementById("miniV2EditSetNumber");
+        number.setAttribute("aria-invalid", "true");
+        number.setAttribute("aria-describedby", "miniV2EditorError");
+        number.focus({ preventScroll: true });
+        return;
+      }
+      const group = getSelectedGroup();
+      const fields = { ...editor.fields, name: editor.fields.name.trim(), setNumber,
+        paint: editor.fields.paint === "" ? null : editor.fields.paint === "true" };
+      const updated = enrichGroup({ ...group, ...fields, copies: group.copies.map(editorCopy) });
+      state.groups = state.groups.map(item => item.rootId === group.rootId ? updated : item);
+      group.copies.forEach(copy => { delete state.draftLocations[copy.id]; });
+      delete state.editorDrafts[group.rootId];
+      state.editor = null;
+      state.browseScroll = { groups: null, individuals: null };
+      const scroll = captureScrollState();
+      scroll.detailTop = editor.readScroll.detailTop;
+      scroll.detailTableLeft = editor.readScroll.detailTableLeft;
+      renderAllPreservingScroll(scroll, { keepSelection: true });
+      root.querySelector('[data-action="edit-mini"]').focus({ preventScroll: true });
     }
 
     function renderStatusBadge(group) {
@@ -833,21 +1119,48 @@
     function renderReadCard(label, value, options) {
       const config = options || {};
       return `
-        <div class="mini-v2-read-card">
+        <div class="mini-v2-read-card${config.wide ? " mini-v2-set-field" : ""}">
           <div class="mini-v2-field-label">${escapeHtml(label)}</div>
           ${renderReadValue(value, config)}
         </div>
       `;
     }
 
-    function renderInventoryCard(label, value, toneClass, options) {
-      const config = options || {};
-      return `
-        <div class="mini-v2-read-card mini-v2-inventory-card ${toneClass || ""}">
-          <div class="mini-v2-field-label">${escapeHtml(label)}</div>
-          ${renderReadValue(value, { marquee: !!config.marquee, extraClass: "mini-v2-inventory-value" })}
+    function renderInventoryAvailability(group) {
+      let available = 0;
+      let pending = false;
+      group.copies.forEach(copy => {
+        const displayed = state.editor ? editorCopy(copy) : { ...copy, currentLocation: getEffectiveLocation(copy) };
+        if (displayed.currentLocation === displayed.home) available++;
+        if (displayed.currentLocation !== copy.currentLocation || displayed.home !== copy.home) pending = true;
+      });
+      const tone = statusClass(getStatusKey({ available, total: group.total }));
+      const explanation = pending ? "Includes unsaved Home or location changes." : "Copies at their home location.";
+      return `<span class="mini-v2-availability-wrap" title="${explanation}">
+        <span class="mini-v2-badge mini-v2-inventory-availability ${tone}"
+          aria-label="${available} of ${group.total} available. ${explanation}">
+          <span class="mini-v2-availability-size" aria-hidden="true">${group.total} / ${group.total}</span>
+          <span class="mini-v2-availability-count">${available} / ${group.total}</span>
+        </span>
+        <span class="mini-v2-availability-pending${pending ? " is-visible" : ""}" aria-hidden="true">*</span>
+      </span>`;
+    }
+
+    function renderInventorySummary(group) {
+      return `<div class="mini-v2-inventory-summary">
+        <div class="mini-v2-inventory-available">
+          <span class="mini-v2-field-label">Available</span>
+          <div class="mini-v2-inventory-summary-value">${renderInventoryAvailability(group)}</div>
         </div>
-      `;
+        <div class="mini-v2-inventory-home">
+          ${state.editor ? '<label class="mini-v2-field-label" for="miniV2EditHome">Home</label>' : '<span class="mini-v2-field-label">Home</span>'}
+          <div class="mini-v2-inventory-summary-value">
+            ${state.editor
+              ? `<select id="miniV2EditHome" class="mini-v2-inventory-home-select" data-edit-field="home">${renderEditOptions("home", state.locations)}</select>`
+              : renderReadValue(group.home || "Not specified", { marquee: true })}
+          </div>
+        </div>
+      </div>`;
     }
 
     function renderReadValue(value, options) {
@@ -871,10 +1184,11 @@
     }
 
     function renderCopyRow(copy) {
-      const effectiveLocation = getEffectiveLocation(copy);
-      const away = effectiveLocation !== copy.home;
-      const dirty = isDirty(copy);
-      const noteValue = copy.note || "";
+      const displayedCopy = state.editor ? editorCopy(copy) : copy;
+      const effectiveLocation = state.editor ? displayedCopy.currentLocation : getEffectiveLocation(copy);
+      const away = effectiveLocation !== displayedCopy.home;
+      const dirty = effectiveLocation !== copy.currentLocation || (displayedCopy.note || "") !== (copy.note || "");
+      const noteValue = displayedCopy.note || "";
       const statusMarkup = dirty
         ? '<span class="mini-v2-copy-status is-dirty">Unsaved</span>'
         : away
@@ -886,11 +1200,13 @@
           <td>${escapeHtml(copy.sticker || "Needs sticker")}</td>
           <td>${statusMarkup}</td>
           <td>
-            <select class="mini-v2-copy-select" data-copy-id="${escapeHtml(copy.id)}">
-              ${renderCopyLocationOptions(copy, effectiveLocation)}
+            <select class="mini-v2-copy-select" data-copy-id="${escapeHtml(copy.id)}" aria-label="Current location for ${escapeHtml(copy.sticker || `copy ${copy.miniNumber}`)}">
+              ${renderCopyLocationOptions(displayedCopy, effectiveLocation)}
             </select>
           </td>
-          <td class="mini-v2-copy-note-cell" title="${escapeHtml(noteValue || "No individual note")}">${escapeHtml(noteValue || "—")}</td>
+          <td class="mini-v2-copy-note-cell" title="${escapeHtml(noteValue || "No individual note")}">${state.editor
+            ? `<input class="mini-v2-editor-copy-note" data-edit-copy-note="${escapeHtml(copy.id)}" aria-label="Note for ${escapeHtml(copy.sticker || `copy ${copy.miniNumber}`)}" value="${escapeHtml(noteValue)}" placeholder="Add note...">`
+            : escapeHtml(noteValue || "—")}</td>
         </tr>
       `;
     }
@@ -912,21 +1228,24 @@
       });
     }
 
-    function renderCopyGrid(copies) {
+    function renderCopyGrid(group) {
       return `
         <div class="mini-v2-copy-grid">
           <div class="mini-v2-copy-table-shell">
-            <table class="mini-v2-table mini-v2-copy-table" aria-label="Individual miniature copies">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Status</th>
-                  <th>Current Location</th>
-                  <th>Note</th>
-                </tr>
-              </thead>
-              <tbody>${copies.map(renderCopyRow).join("")}</tbody>
-            </table>
+            <div class="mini-v2-copy-table-content">
+              ${renderInventorySummary(group)}
+              <table class="mini-v2-table mini-v2-copy-table" aria-label="Individual miniature copies">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Status</th>
+                    <th>Current Location</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>${group.copies.map(renderCopyRow).join("")}</tbody>
+              </table>
+            </div>
           </div>
         </div>
       `;
@@ -934,14 +1253,18 @@
 
     function renderCopyLocationOptions(copy, effectiveLocation) {
       return [`<option value="__RETURN_HOME__"${effectiveLocation === copy.home ? " selected" : ""}>Return Home</option>`]
-        .concat(state.locations.map(location => `
+        .concat(Array.from(new Set([...state.locations, effectiveLocation, copy.home])).filter(Boolean).map(location => `
           <option value="${escapeHtml(location)}"${effectiveLocation === location ? " selected" : ""}>${escapeHtml(location)}</option>
         `))
         .join("");
     }
 
+    function hasNamedSet(group) {
+      return hasMeaningfulValue(group.set) && String(group.set).trim().toLowerCase() !== "n/a";
+    }
+
     function getCollectionSummary(group) {
-      const hasSet = hasMeaningfulValue(group.set) && String(group.set).trim().toLowerCase() !== "n/a";
+      const hasSet = hasNamedSet(group);
       const hasSetNumber = hasMeaningfulValue(group.setNumber);
       if (hasSet && hasSetNumber) return `${group.set} (${group.setNumber})`;
       if (hasSet) return String(group.set);
@@ -988,6 +1311,32 @@
         event.stopPropagation();
         const action = actionButton.getAttribute("data-action");
 
+        if (action === "edit-mini") { beginEditor(); return; }
+        if (action === "discard-edit") { discardEditor(); return; }
+        if (action === "save-edit") { saveEditor(); return; }
+        if (action === "review-editor-drafts") {
+          const ids = editorDraftIds();
+          if (!ids.length) return;
+          const next = ids[(ids.indexOf(state.selectedRootId) + 1) % ids.length];
+          if (state.editor && next !== state.editor.rootId) leaveEditor();
+          if (next !== state.selectedRootId) state.selectedCopyId = "";
+          state.selectedRootId = next;
+          renderAllPreservingScroll(null, { keepSelection: true });
+          document.getElementById("miniV2EditName").focus({ preventScroll: true });
+          return;
+        }
+        if (action === "edit-all-home" && state.editor) {
+          getSelectedGroup().copies.forEach(copy => {
+            const home = editorCopy(copy).home;
+            state.editor.copies[copy.id].currentLocation = home;
+            const select = Array.from(detailContentNode.querySelectorAll("select[data-copy-id]"))
+              .find(node => node.dataset.copyId === copy.id);
+            select.innerHTML = renderCopyLocationOptions(editorCopy(copy), home);
+          });
+          syncEditorFeedback();
+          return;
+        }
+
         if (action === "toggle-facet") {
           const restoreFocus = captureFocus();
           const facetKey = actionButton.getAttribute("data-facet-key") || "";
@@ -1003,6 +1352,7 @@
           const currentIndex = dirtyGroups.findIndex(group => group.rootId === state.selectedRootId);
           const group = dirtyGroups[(currentIndex + 1) % dirtyGroups.length];
           if (!group) return;
+          if (state.editor && group.rootId !== state.editor.rootId && !leaveEditor()) return;
           const dirtyCopy = group.copies.find(isDirty);
           if (!getBrowseRows().some(row => row.group.rootId === group.rootId && (!row.copy || row.copy.id === dirtyCopy.id))) {
             state.search = "";
@@ -1125,6 +1475,7 @@
         const copyId = clickedRow.getAttribute("data-copy-id") || "";
         if (!rootId) return;
         if (rootId !== state.selectedRootId || (copyId && copyId !== state.selectedCopyId)) {
+          if (state.editor && rootId !== state.editor.rootId && !leaveEditor()) return;
           clearTimeout(copyRevealTimer);
           state.selectedRootId = rootId;
           state.selectedCopyId = copyId;
@@ -1137,6 +1488,7 @@
     }
 
     function handleRootInput(event) {
+      if (updateEditorInput(event.target)) return;
       if (event.target === searchInputNode) {
         state.search = searchInputNode.value;
         renderAllPreservingScroll();
@@ -1152,6 +1504,7 @@
     }
 
     function handleRootChange(event) {
+      if (updateEditorInput(event.target)) return;
       const copySelect = event.target.closest("select[data-copy-id]");
       if (copySelect) {
         const group = getSelectedGroup();
@@ -1159,7 +1512,13 @@
         const copy = group.copies.find(item => item.id === copySelect.getAttribute("data-copy-id"));
         if (!copy) return;
 
-        const nextLocation = copySelect.value === "__RETURN_HOME__" ? copy.home : copySelect.value;
+        const nextLocation = copySelect.value === "__RETURN_HOME__" ? (state.editor ? editorCopy(copy).home : copy.home) : copySelect.value;
+        if (state.editor) {
+          state.editor.copies[copy.id].currentLocation = nextLocation;
+          copySelect.innerHTML = renderCopyLocationOptions(editorCopy(copy), nextLocation);
+          syncEditorFeedback();
+          return;
+        }
         if (nextLocation === copy.currentLocation) {
           delete state.draftLocations[copy.id];
         } else {
@@ -1189,6 +1548,14 @@
         state.locationMenuSearch = "";
         renderLocationFilter();
         locationTriggerNode.focus();
+        return;
+      }
+
+      if (state.editor && event.key === "Escape") {
+        // Escape on a native select belongs to its popup, not to the whole editor.
+        if (event.target instanceof HTMLSelectElement) return;
+        event.preventDefault();
+        clearSelectedGroup();
         return;
       }
 
@@ -1662,7 +2029,7 @@
     }
 
     function ensureSelectionVisibility(rows) {
-      if (!state.selectedRootId) return;
+      if (!state.selectedRootId || state.editor) return;
       const selectedStillVisible = rows.some(row => row.group.rootId === state.selectedRootId
         && (!row.copy || !state.selectedCopyId || row.copy.id === state.selectedCopyId));
       if (!selectedStillVisible) {
@@ -1674,6 +2041,7 @@
 
     function clearSelectedGroup() {
       if (!state.selectedRootId) return;
+      if (!leaveEditor()) return;
       state.selectedRootId = "";
       state.selectedCopyId = "";
       clearTimeout(copyRevealTimer);
@@ -1740,7 +2108,7 @@
         { label: "Role", value: group.role },
         { label: "Paint", value: typeof group.paint === "boolean" ? String(group.paint) : "" },
         { label: "Set", value: group.set },
-        { label: "Set #", value: group.setNumber },
+        ...(hasNamedSet(group) ? [{ label: "Set #", value: group.setNumber }] : []),
         { label: "Notes", value: group.notes }
       ];
 

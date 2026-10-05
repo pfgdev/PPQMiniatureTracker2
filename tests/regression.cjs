@@ -618,13 +618,418 @@ const firstCopy = '013-ZHESOL-01';
       assert.ok(await page.locator('.mini-v2-list-wrap').evaluate(n => n.scrollWidth > n.clientWidth));
       assert.ok(await page.locator('.mini-v2-copy-table-shell').evaluate(n => n.scrollWidth > n.clientWidth));
       assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+      const homeAlignment = () => page.locator('.mini-v2-copy-table-shell').evaluate(shell => {
+        const label = shell.querySelector('.mini-v2-inventory-home .mini-v2-field-label');
+        const column = shell.querySelector('th:nth-child(3)');
+        return label.getBoundingClientRect().left - column.getBoundingClientRect().left - parseFloat(getComputedStyle(column).paddingLeft);
+      });
+      assert.ok(Math.abs(await homeAlignment()) < 1);
+      await page.locator('.mini-v2-copy-table-shell').evaluate(shell => { shell.scrollLeft = 100; });
+      assert.ok(await page.locator('.mini-v2-copy-table-shell').evaluate(shell => shell.scrollLeft > 0));
+      assert.ok(Math.abs(await homeAlignment()) < 1);
+    });
+
+    await check('editor preserves panel geometry and field order across desktop and mobile', async () => {
+      for (const width of [1440, 1100, 980, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        await open(soldier);
+        const geometry = () => page.locator('#miniV2DetailPanel').evaluate(panel => {
+          const column = panel.querySelector('.mini-v2-copy-table th:nth-child(3)');
+          const label = panel.querySelector('.mini-v2-inventory-home .mini-v2-field-label');
+          const homeValue = panel.querySelector('.mini-v2-inventory-home .mini-v2-inventory-summary-value > *');
+          const copySelect = panel.querySelector('.mini-v2-copy-select');
+          const idColumn = panel.querySelector('.mini-v2-copy-table th:first-child');
+          const idInset = idColumn.getBoundingClientRect().left + parseFloat(getComputedStyle(idColumn).paddingLeft);
+          const availableLabel = panel.querySelector('.mini-v2-inventory-available .mini-v2-field-label');
+          const availablePill = panel.querySelector('.mini-v2-inventory-availability');
+          return {
+            width: panel.getBoundingClientRect().width,
+            header: panel.querySelector('.mini-v2-detail-header').getBoundingClientRect().height,
+            columns: [...document.querySelectorAll('.mini-v2-browse-table th')].map(n => n.getBoundingClientRect().width),
+            summaryHeight: panel.querySelector('.mini-v2-inventory-summary').getBoundingClientRect().height,
+            availableAligned: [availableLabel, availablePill].every(node => Math.abs(node.getBoundingClientRect().left - idInset) < 1)
+              && getComputedStyle(availableLabel).textAlign === 'left',
+            homeAligned: Math.abs(label.getBoundingClientRect().left - column.getBoundingClientRect().left - parseFloat(getComputedStyle(column).paddingLeft)) < 1,
+            homeWidthMatches: Math.abs(homeValue.getBoundingClientRect().width - copySelect.getBoundingClientRect().width) < 1
+          };
+        });
+        const before = await geometry();
+        assert.equal(before.availableAligned, true);
+        assert.equal(before.homeAligned, true);
+        assert.equal(before.homeWidthMatches, true);
+        if (process.env.SCREENSHOT_PATH) await page.screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-inspector-${width}.png`)
+        });
+        await action('edit-mini').click();
+        await settle();
+        assert.deepEqual(await geometry(), before);
+        assert.equal(await page.locator('[data-edit-field="home"]').evaluate(home => {
+          const copy = document.querySelector('.mini-v2-copy-select');
+          const homeStyle = getComputedStyle(home);
+          const copyStyle = getComputedStyle(copy);
+          return ['height', 'padding', 'borderRadius', 'fontSize'].every(key => homeStyle[key] === copyStyle[key]);
+        }), true);
+        assert.deepEqual(await page.locator('.mini-v2-detail-grid [data-edit-field]').evaluateAll(nodes => nodes.map(n => n.dataset.editField)),
+          ['size', 'creatureType', 'race', 'sex', 'role']);
+        assert.deepEqual(await page.locator('.mini-v2-product-grid [data-edit-field]').evaluateAll(nodes => nodes.map(n => n.dataset.editField)),
+          ['set', 'setNumber', 'paint']);
+        assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '3 / 3');
+        assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 3);
+        assert.equal(await page.locator('.mini-v2-editor-copy-note').count(), 3);
+        assert.equal(await action('save-changes').count(), 0);
+        assert.equal(await action('save-edit').isDisabled(), true);
+        assert.equal(await page.locator('[data-edit-field="paint"]').isChecked(), true);
+        assert.equal(await page.locator('.mini-v2-editor .mini-v2-read-card, .mini-v2-editor .mini-v2-note-card').count(), 0);
+        assert.equal(await page.locator('[data-edit-field="set"]').evaluate(n => n.tagName), 'SELECT');
+        assert.deepEqual(await page.locator('[data-edit-field="set"] option').evaluateAll(nodes => nodes.map(n => n.value)),
+          ['', 'Aberrations', 'Angelfire', 'Lords of Madness', 'n/a', 'Night Below', 'Underdark (2005)']);
+        assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+        assert.ok(await page.locator('#miniV2EditName').evaluate(n => n.clientWidth > 60));
+        if (process.env.SCREENSHOT_PATH) {
+          await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-editor-${width}.png`) });
+          if (width === 390) await page.locator('#miniV2DetailPanel').screenshot({
+            path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-editor-mobile-panel.png')
+          });
+        }
+        await action('discard-edit').click();
+        await settle();
+        assert.deepEqual(await geometry(), before);
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('editor saves shared and copy values together without live browse changes or caret loss', async () => {
+      await fresh();
+      await open(fighter);
+      await action('edit-mini').click();
+      const role = page.locator('[data-edit-field="role"]');
+      await role.selectOption('Spellcaster');
+      assert.equal(await page.locator(`tr[data-group-id="${fighter}"] .mini-v2-cell-role`).innerText(), 'Melee');
+      await page.locator('#miniV2EditName').fill('Spirit Folk Mage');
+      await page.locator('[data-edit-field="set"]').selectOption('Lords of Madness');
+      await page.locator('[data-edit-field="setNumber"]').fill('007');
+      const note = page.locator('[data-edit-copy-note="048-SPIFOLFIG-01"]');
+      await note.evaluate(n => { n.__sameNode = true; });
+      await note.fill('Blue robes');
+      await note.press('ArrowLeft');
+      const caret = await note.evaluate(n => n.selectionStart);
+      await note.pressSequentially('!');
+      assert.equal(await note.evaluate(n => n.__sameNode), true);
+      assert.equal(await note.evaluate(n => n.selectionStart), caret + 1);
+      await select('048-SPIFOLFIG-07').selectOption('Spare People');
+      await page.locator('[data-edit-field="notes"]').fill('First line\nSecond line');
+      await page.locator('[data-edit-field="notes"]').press('Enter');
+      assert.equal(await page.locator('.mini-v2-editor').count(), 1);
+      await page.locator('[data-edit-field="paint"]').uncheck();
+      await mode('individuals');
+      assert.equal(await note.evaluate(n => n.__sameNode), true);
+      await page.locator('[data-detail-copy-id="048-SPIFOLFIG-02"] td').first().click();
+      assert.equal(await role.inputValue(), 'Spellcaster');
+      await action('save-edit').click();
+      await settle();
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Spirit Folk Mage');
+      assert.equal(await page.locator('.mini-v2-product-grid .mini-v2-read-card').last().locator('.mini-v2-read-value').innerText(), 'Unpainted');
+      assert.doesNotMatch(await page.locator('#miniV2DetailHeaderTags').innerText(), /Unpainted/i);
+      assert.equal(await select('048-SPIFOLFIG-07').inputValue(), 'Spare People');
+      assert.match(await page.locator('.mini-v2-read-card').nth(5).innerText(), /Lords of Madness \(007\)/);
+      assert.match(await page.locator('.mini-v2-note-body').textContent(), /First line\nSecond line/);
+      assert.equal(await page.locator('tr[data-copy-id="048-SPIFOLFIG-02"] .mini-v2-cell-role').innerText(), 'Spellcaster');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-02');
+      await fresh();
+      assert.equal(await page.locator(`tr[data-group-id="${fighter}"] .mini-v2-name`).innerText(), 'Spirit Folk Fighter');
+    });
+
+    await check('editor Discard preserves earlier location drafts and other groups', async () => {
+      await fresh();
+      await open(fighter);
+      await select('048-SPIFOLFIG-01').selectOption('Quest Minis');
+      await open(soldier);
+      await select(firstCopy).selectOption('Quest Minis');
+      await action('edit-mini').click();
+      assert.equal(await action('save-edit').isDisabled(), false);
+      await page.locator('[data-edit-field="role"]').selectOption('Support');
+      await select(firstCopy).selectOption('Encounter Box G');
+      await action('discard-edit').click();
+      assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Tank');
+      await page.locator('[data-edit-copy-note="013-ZHESOL-02"]').fill('Temporary');
+      await action('discard-edit').click();
+      assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+      assert.equal(await page.locator('.mini-v2-copy-note-cell').nth(1).innerText(), '—');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Support');
+      await action('save-edit').click();
+      assert.match(await action('review-changes').innerText(), /1/);
+      await open(fighter);
+      assert.equal(await select('048-SPIFOLFIG-01').inputValue(), 'Quest Minis');
+      assert.equal(await action('save-changes').isDisabled(), false);
+    });
+
+    await check('editor keeps unapplied drafts on close and navigation without confirmation', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Ranged');
+      assert.equal(await page.evaluate(() => {
+        const event = new Event('beforeunload', { cancelable: true });
+        window.dispatchEvent(event);
+        return event.defaultPrevented;
+      }), true);
+      await page.mouse.click(1, 1);
+      assert.equal(await page.locator('#miniV2Root').evaluate(n => n.classList.contains('mini-v2-has-detail')), false);
+      assert.match(await action('review-editor-drafts').innerText(), /1/);
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"] .mini-v2-cell-role`).innerText(), 'Tank');
+      assert.equal(await page.evaluate(() => {
+        const event = new Event('beforeunload', { cancelable: true });
+        window.dispatchEvent(event);
+        return event.defaultPrevented;
+      }), true);
+      await page.locator(`tr[data-group-id="${fighter}"]`).click();
+      assert.equal(await page.locator('.mini-v2-editor').count(), 0);
+      await page.locator(`tr[data-group-id="${soldier}"]`).click();
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Ranged');
+      await mode('individuals');
+      await page.locator('tr[data-copy-id="013-ZHESOL-03"]').click();
+      await page.locator('#miniV2SearchInput').fill('nothing-matches');
+      assert.equal(await page.locator('.mini-v2-empty').count(), 1);
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Ranged');
+      await action('save-edit').click();
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Zhent Soldier');
+      assert.equal(await page.evaluate(() => {
+        const event = new Event('beforeunload', { cancelable: true });
+        window.dispatchEvent(event);
+        return event.defaultPrevented;
+      }), false);
+      assert.equal(await page.locator('.mini-v2-empty').count(), 1);
+      await action('clear-filters').click();
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Support');
+      await page.locator('tr[data-copy-id="048-SPIFOLFIG-01"]').click();
+      assert.equal(await page.locator('.mini-v2-editor').count(), 0);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Spirit Folk Fighter');
+      assert.equal(await page.locator('tr[data-copy-id="013-ZHESOL-01"] .mini-v2-cell-role').innerText(), 'Ranged');
+      await action('review-editor-drafts').click();
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Support');
+      await action('discard-edit').click();
+      assert.equal(await action('review-editor-drafts').count(), 0);
+    });
+
+    await check('multiple editor drafts remain discoverable through filters and do not leak between groups', async () => {
+      await fresh();
+      const dialogs = [];
+      const onDialog = async dialog => { dialogs.push(dialog.message()); await dialog.dismiss(); };
+      page.on('dialog', onDialog);
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Boss');
+      await page.locator('[data-edit-copy-note="013-ZHESOL-02"]').fill('Soldier draft');
+      await action('close-detail').click();
+      await open(fighter);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="notes"]').fill('Fighter draft');
+      await page.locator('#miniV2EditName').fill('Fighter renamed');
+      await page.locator('[data-edit-field="notes"]').press('Escape');
+      assert.match(await action('review-editor-drafts').innerText(), /2/);
+      await page.locator('#miniV2SearchInput').fill('no-such-mini');
+      await action('review-editor-drafts').click();
+      assert.equal(await page.locator('#miniV2EditName').inputValue(), 'Zhent Soldier');
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Boss');
+      assert.equal(await page.locator('[data-edit-copy-note="013-ZHESOL-02"]').inputValue(), 'Soldier draft');
+      await action('review-editor-drafts').click();
+      assert.equal(await page.locator('#miniV2EditName').inputValue(), 'Fighter renamed');
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Melee');
+      assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Fighter draft');
+      assert.equal(await page.locator('#miniV2SearchInput').inputValue(), 'no-such-mini');
+      await action('save-edit').click();
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Fighter renamed');
+      assert.match(await action('review-editor-drafts').innerText(), /1/);
+      await action('review-editor-drafts').click();
+      await action('discard-edit').click();
+      assert.equal(await action('review-editor-drafts').count(), 0);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Zhent Soldier');
+      await action('clear-filters').click();
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"] .mini-v2-cell-role`).innerText(), 'Tank');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Boss');
+      await action('close-detail').click();
+      assert.deepEqual(dialogs, []);
+      page.off('dialog', onDialog);
+      await fresh();
+      assert.equal(await action('review-editor-drafts').count(), 0);
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"] .mini-v2-cell-role`).innerText(), 'Tank');
+    });
+
+    await check('Home edits reclassify without moving copies, and explicit Set All Home moves them', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="home"]').selectOption('Dwarves');
+      assert.equal(await select(firstCopy).inputValue(), 'Spare People');
+      assert.equal(await page.locator('.mini-v2-editor-home-note').isVisible(), true);
+      assert.ok((await page.locator('.mini-v2-copy-status').allTextContents()).every(text => text === 'Away'));
+      await action('save-edit').click();
+      assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '0 / 3');
+      assert.equal(await select(firstCopy).inputValue(), 'Spare People');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="home"]').selectOption('Mounts & Misc. Creatures');
+      await action('edit-all-home').click();
+      await action('save-edit').click();
+      assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '3 / 3');
+      assert.equal(await select(firstCopy).inputValue(), 'Mounts & Misc. Creatures');
+    });
+
+    await check('availability follows shown locations in both modes while browse counts wait for Save', async () => {
+      await fresh();
+      await open(fighter);
+      const count = page.locator('.mini-v2-availability-count');
+      const pending = page.locator('.mini-v2-availability-pending');
+      const pillGeometry = () => page.locator('.mini-v2-inventory-availability').evaluate(pill => {
+        const count = pill.querySelector('.mini-v2-availability-count');
+        const center = node => { const rect = node.getBoundingClientRect(); return rect.left + rect.width / 2; };
+        return {
+          width: pill.getBoundingClientRect().width,
+          centered: Math.abs(center(pill) - center(count)) < 1
+        };
+      });
+      const originalPill = await pillGeometry();
+      assert.equal(originalPill.centered, true);
+      assert.equal(await count.innerText(), '8 / 10');
+      assert.equal(await pending.isVisible(), false);
+      await select('048-SPIFOLFIG-07').selectOption('Spare People');
+      assert.equal(await count.innerText(), '9 / 10');
+      assert.equal(await pending.isVisible(), true);
+      await action('edit-mini').click();
+      assert.equal(await count.innerText(), '9 / 10');
+      await page.locator('[data-edit-field="home"]').selectOption('Dwarves');
+      assert.equal(await count.innerText(), '0 / 10');
+      await action('edit-all-home').click();
+      assert.equal(await count.innerText(), '10 / 10');
+      assert.deepEqual(await pillGeometry(), originalPill);
+      assert.equal(await page.locator(`tr[data-group-id="${fighter}"] .mini-v2-count`).innerText(), '8/10');
+      await action('close-detail').click();
+      await open(fighter);
+      assert.equal(await count.innerText(), '10 / 10');
+      assert.equal(await pending.isVisible(), true);
+      await action('discard-edit').click();
+      assert.equal(await count.innerText(), '9 / 10');
+      await action('reset-changes').click();
+      assert.equal(await count.innerText(), '8 / 10');
+      assert.equal(await pending.isVisible(), false);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="notes"]').fill('Metadata-only change');
+      assert.equal(await pending.isVisible(), false);
+      await select('048-SPIFOLFIG-07').selectOption('Spare People');
+      await action('save-edit').click();
+      assert.equal(await count.innerText(), '9 / 10');
+      assert.equal(await pending.isVisible(), false);
+      assert.equal(await page.locator(`tr[data-group-id="${fighter}"] .mini-v2-count`).innerText(), '9/10');
+    });
+
+    await check('editor preserves unknown choices and missing paint; unrelated omissions do not block edits', async () => {
+      const incomplete = JSON.parse(JSON.stringify(data));
+      incomplete.groups[0].paint = null;
+      incomplete.groups[0].notes = '';
+      incomplete.groups[0].race = 'Custom folk';
+      incomplete.groups[0].set = '<script>not executable</script>';
+      await fresh(makeHtml(incomplete));
+      await open(soldier);
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), 'Custom folk');
+      assert.equal(await page.locator('[data-edit-field="paint"]').evaluate(n => n.indeterminate), true);
+      await page.locator('#miniV2EditName').fill('   ');
+      await action('save-edit').click();
+      assert.equal(await page.locator('#miniV2EditName').getAttribute('aria-invalid'), 'true');
+      await page.locator('#miniV2EditName').fill('Zhent Soldier');
+      await page.locator('[data-edit-field="role"]').selectOption('Spellcaster');
+      await action('save-edit').click();
+      assert.doesNotMatch(await page.locator('#miniV2DetailHeaderTags').innerText(), /Unpainted/i);
+      assert.equal(await page.locator('.mini-v2-product-grid .mini-v2-read-card').last().locator('.mini-v2-read-value').innerText(), 'Not specified');
+      assert.match(await page.locator('.mini-v2-read-card').nth(5).innerText(), /<script>not executable<\/script>/);
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), '');
+      assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), 'Custom folk');
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Spellcaster');
+      const paint = page.locator('[data-edit-field="paint"]');
+      assert.equal(await paint.evaluate(n => n.indeterminate), true);
+      await page.setViewportSize({ width: 390, height: 1000 });
+      if (process.env.SCREENSHOT_PATH) await page.locator('#miniV2DetailPanel').screenshot({
+        path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-editor-unspecified-paint.png')
+      });
+      await paint.check();
+      assert.equal(await paint.evaluate(n => n.indeterminate), false);
+      await action('save-edit').click();
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="paint"]').isChecked(), true);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('Set number is only missing for a named set and follows edits to set membership', async () => {
+      await fresh();
+      await open(data.groups.find(group => group.set === 'n/a').rootId);
+      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="setNumber"]').fill('');
+      await action('save-edit').click();
+      const status = page.locator('#miniV2DetailHeaderTags .mini-v2-detail-tag');
+      assert.equal(await status.getAttribute('title'), 'Missing: Set #');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="set"]').selectOption('n/a');
+      await action('save-edit').click();
+      assert.match(await status.innerText(), /^Ready$/i);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="set"]').selectOption('');
+      await action('save-edit').click();
+      assert.equal(await status.getAttribute('title'), 'Missing: Set');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="set"]').selectOption('Lords of Madness');
+      await action('save-edit').click();
+      assert.equal(await status.getAttribute('title'), 'Missing: Set #');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="setNumber"]').fill('0');
+      await action('save-edit').click();
+      assert.match(await status.innerText(), /^Ready$/i);
+
+      const unspecified = JSON.parse(JSON.stringify(data));
+      unspecified.groups[0].set = ' N/A ';
+      unspecified.groups[0].setNumber = '  ';
+      unspecified.groups[0].notes = '';
+      await fresh(makeHtml(unspecified));
+      await open(soldier);
+      assert.equal(await status.getAttribute('title'), 'Missing: Notes');
+    });
+
+    await check('Set number limits new input without blocking unrelated edits to a legacy value', async () => {
+      const legacy = JSON.parse(JSON.stringify(data));
+      legacy.groups[0].setNumber = 'n/a';
+      await fresh(makeHtml(legacy));
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Spellcaster');
+      await action('save-edit').click();
+      assert.match(await page.locator('.mini-v2-read-card').nth(5).innerText(), /Lords of Madness \(n\/a\)/);
+      await action('edit-mini').click();
+      const number = page.locator('[data-edit-field="setNumber"]');
+      await number.fill('abc');
+      await action('save-edit').click();
+      assert.equal(await number.getAttribute('aria-invalid'), 'true');
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /three digits/);
+      await number.fill('1234');
+      assert.equal(await number.inputValue(), '123');
+      assert.equal(await number.getAttribute('aria-invalid'), null);
+      await action('save-edit').click();
+      assert.match(await page.locator('.mini-v2-read-card').nth(5).innerText(), /Lords of Madness \(123\)/);
     });
 
     await check('marquee honors reduced motion without changing card height', async () => {
       await page.setViewportSize({ width: 1440, height: 1000 });
-      await fresh();
+      const longSet = JSON.parse(JSON.stringify(data));
+      longSet.groups.find(group => group.rootId === fighter).set = 'Lords of Madness - Collector Edition with an unusually long set name';
+      await fresh(makeHtml(longSet));
       await open(fighter);
-      const card = page.locator('.mini-v2-read-card').last();
+      const card = page.locator('.mini-v2-set-field');
       const height = await card.evaluate(n => n.clientHeight);
       assert.ok(await page.evaluate(() => document.getAnimations().some(a => a.effect.target.classList.contains('mini-v2-marquee-text'))));
       await page.emulateMedia({ reducedMotion: 'reduce' });

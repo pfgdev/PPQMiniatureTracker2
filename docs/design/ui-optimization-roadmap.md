@@ -779,6 +779,9 @@ Deliverables:
 
 - revisit the app header, browse header, and detail header together as one visual system
 - tune header contrast, hierarchy, and differentiation holistically instead of in isolation
+- review the purpose and presentation of the passive top labels, including Mock Data, Groups, Visible, and Sticker Work; decide which information belongs here and whether any label should become a useful action
+- prevent wrapping labels or changing counts from increasing the top area's height and shifting the browse/detail workspace down; include narrower widths in this review
+- keep the working Unsaved and Drafts recovery actions accessible when revisiting the passive labels
 - evaluate future inline-edit affordances in the current detail-header action slot
 - likely review this pass with the UX design agent before implementation
 
