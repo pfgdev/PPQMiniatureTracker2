@@ -2,6 +2,15 @@
 
 Read-only inspection on 2026-09-07.
 
+**Current status:** the [approved October 7 integration](collection-preview-integration-2026-10-07.md)
+copied the verified data into 2.0 after backups. The old source remains unchanged.
+The new app source is a no-save preview, awaiting clasp upload.
+
+**Updated import reference:** the [October 7 fresh audit and dry run](import-dry-run-2026-10-07.md)
+reread the live source, confirmed the counts below, captured complete catalogs,
+and documented exact candidate tables and six preserved warnings. The September
+inspection below remains historical context. Neither audit changed a spreadsheet.
+
 Source: [PPQ Miniature Tracker](https://docs.google.com/spreadsheets/d/1mGipFEfW--whXnmIPyW9i9Y8eo4pyKezSooOVacO2_4/edit).
 
 ## Confirmed Inventory
@@ -63,15 +72,56 @@ bounded header/sample ranges. Compared each physical copy's shared fields with
 its parent definition. No changes were made to spreadsheet content, permissions,
 formulas, scripts, or deployments. This is not a full audit of every legacy formula.
 
+## Destination Discovery: October 7, 2026
+
+Read-only Drive discovery found an existing destination:
+[PPQ Miniature Tracker 2.0](https://docs.google.com/spreadsheets/d/1JxWeleWT2upYOmenJmXhbxmbo5WW7nsxPHbcuXPmVHY/edit).
+
+- Destination spreadsheet ID: `1JxWeleWT2upYOmenJmXhbxmbo5WW7nsxPHbcuXPmVHY`.
+- Apps Script project ID from `.clasp.json`:
+  `1SMCFIDHUrUk3FrPteOSIXqENMK21wmtrsE_8GZ00NzY4poJuHpOwHwB0`.
+- A read-only Apps Script `projects.get` request confirmed that project's
+  `parentId` equals the destination spreadsheet ID. Its title is
+  `PPQ Miniature Tracker 2.0 App Script Project`.
+- The workbook has one tab, `MiniatureDataTable` (`sheetId` 0), with 1,000 rows
+  and 26 columns. A full allocated-range value read, A1:Z1000, returned only
+  A1:D2: test0/test1/test2/test3 and testa/testb/testc/testd. There are no
+  miniature records in this tab to reconcile as of this inspection.
+- The app is container-bound to this workbook, but `Code.js` still builds mock
+  data and has no active spreadsheet read/write layer. Being attached to a sheet
+  is not the same as using its cells as storage.
+
+The October 6 source spot-check reconfirmed Entry Form headers, sample group
+values, formula-backed Master Inventory fields, and the Data Lists catalogs,
+including full/assigned/unassigned sticker lists. It was not a fresh full count;
+the September inventory counts above remain the earlier audit baseline.
+
+No spreadsheet content, script source, deployment, sharing, or permissions were
+changed during destination discovery. Existing clasp credentials were used only
+for the metadata GET; no Apps Script function was executed.
+
 ## Working Decision
 
 The source already holds the user's 600+ miniature inventory. There is no need
 to manually paste it again just to begin integration.
 
-User is comfortable copying data into a new sheet later if useful. Keep the old
-sheet as the source while implementing a read-only adapter. Then choose between
-targeted writes to the existing schema and a simpler separate working sheet for
-the new app. Preserve Root IDs, copy IDs, sticker strings, and locations either way.
+The user confirmed the new app should replace the old spreadsheet workflow,
+not synchronize two separately editable systems. Use the old PPQ Miniature
+Tracker as the migration source and preserve it as the legacy reference/fallback.
+The existing PPQ Miniature Tracker 2.0 workbook is the recommended destination;
+there is no need to create a third workbook just because active storage is not
+implemented yet.
+
+Proposed sequence: back up both workbooks, refresh the complete source audit and
+mapping, then build a dry-run importer targeting clean Groups/Copies/Lists/Stickers
+tabs in 2.0. Preserve its existing test tab until deliberately archived; do not
+erase it or copy the old spreadsheet's UI/formulas indiscriminately. Preserve
+Root IDs, copy IDs, sticker strings, current locations, group Notes, and textual
+Set numbers. Create individual-note storage separately. Validate counts and
+relationships and make reruns safe before importing. Preview real data without
+durable editing before implementing and testing the live save layer and cutover.
 Do not apply mock fixture changes back to real records.
 
-No sheet has been created, copied, imported, or connected to active app code yet.
+No sheet has been created, copied, or imported by this work, and active app code
+still uses mock data. Future imports/writes must explicitly target the verified
+destination, never infer a destination from whichever sheet happens to be active.

@@ -1,0 +1,8 @@
+# Only application files belong in the Apps Script project.
+**/**
+!appsscript.json
+!Code.js
+!Storage.js
+!Index.html
+!Scripts.html
+!Styles.html

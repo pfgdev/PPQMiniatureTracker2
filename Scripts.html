@@ -1,5 +1,17 @@
 <script>
   (function () {
+    if (INITIAL_STATE.loadError) {
+      document.getElementById("app").innerHTML = `<div class="mini-v2"><section class="v2-card mini-v2-top-card">
+        <div class="v2-card-header">Collection preview unavailable</div>
+        <div class="v2-card-body"><p>The imported collection could not be loaded. No data was changed.</p>
+          <p>Try reloading. If this continues, check the Apps Script authorization and the 2.0 storage tabs.</p>
+          <button type="button" class="button" id="miniV2RetryLoad">Reload preview</button>
+        </div></section></div>`;
+      document.getElementById("miniV2RetryLoad").addEventListener("click", () => window.location.reload());
+      return;
+    }
+    const previewMode = INITIAL_STATE.previewMode === true;
+    const stickerCatalog = Array.isArray(INITIAL_STATE.stickerCatalog) ? INITIAL_STATE.stickerCatalog : null;
     const desktopMq = window.matchMedia("(min-width: 980px)");
     const reducedMotionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
     const FILTER_OPTIONS = {
@@ -51,13 +63,28 @@
     };
 
     const EDIT_FIELDS = ["name", "size", "creatureType", "race", "sex", "role", "set", "setNumber", "home", "paint", "notes"];
+    const UNSPECIFIED_VALUE = "Not specified";
+    const FACET_FIELDS = { sizes: "size", creatureTypes: "creatureType", races: "race", sexes: "sex", roles: "role" };
+    Object.entries(FACET_FIELDS).forEach(([kind, field]) => {
+      if (Array.isArray(INITIAL_STATE.catalogs?.[field])) FILTER_OPTIONS[kind] = INITIAL_STATE.catalogs[field].slice();
+    });
+    const PAINT_OPTIONS = ["Painted", "Unpainted", "Work in Progress"];
+    const STICKER_FILTER_OPTIONS = ["Assigned", "Missing"];
+    const EDIT_REQUIRED_CHOICES = {
+      size: "Size", creatureType: "Creature Type", race: "Race", sex: "Sex", role: "Role", set: "Set", paint: "Paint"
+    };
+    const NEXT_STICKER_STORAGE_KEY = `ppq-miniature-tracker:${INITIAL_STATE.prototypeMode ? "mock" : "collection"}:next-sticker:v1`;
 
     const state = {
       groups: INITIAL_STATE.groups.map((group, index) => enrichGroup({ ...group, originalOrder: index })),
       locations: INITIAL_STATE.locations.slice(),
-      sets: Array.from(new Set(INITIAL_STATE.groups.map(group => group.set).filter(Boolean))).sort(compareText),
+      homeLocations: (INITIAL_STATE.homeLocations || INITIAL_STATE.locations).slice(),
+      sets: Array.from(new Set(INITIAL_STATE.catalogs?.set || INITIAL_STATE.groups.map(group => group.set).filter(Boolean))).sort(compareText),
       browseMode: "groups",
       browseScroll: { groups: null, individuals: null },
+      collectionView: "",
+      previousBrowse: null,
+      summaryPanel: "",
       search: "",
       locationFilter: "all",
       locationMenuOpen: false,
@@ -73,12 +100,19 @@
       draftLocations: {},
       editor: null,
       editorDrafts: Object.create(null),
+      newGroups: Object.create(null),
+      deletedGroups: [],
+      nextStickerStart: null,
+      nextStickerRevision: 0,
+      stickerCursorRevision: 0,
+      nextMockId: 1,
       detailPointerDownInside: false
     };
 
     let root;
     let workspaceNode;
     let summaryLaneNode;
+    let summaryMarkup = "";
     let listHeaderNoteNode;
     let searchInputNode;
     let locationComboboxNode;
@@ -111,6 +145,7 @@
     let copyRevealTimer = null;
     let scrollRestoreVersion = 0;
 
+    state.nextStickerStart = loadNextStickerStart();
     initMiniV2();
 
     function initMiniV2() {
@@ -134,9 +169,14 @@
       document.getElementById("app").innerHTML = `
         <div id="miniV2Root" class="mini-v2">
           <section class="v2-card mini-v2-top-card">
-            <div class="v2-card-header">PPQ Miniature Tracker</div>
+            <div class="v2-card-header mini-v2-app-header">
+              <span>PPQ Miniature Tracker</span>
+              <button type="button" class="mini-v2-demo-note" data-action="toggle-summary" data-summary-panel="demo"
+                aria-label="${previewMode ? "Collection preview" : "Demo data"}: changes reset on reload. More information" aria-expanded="false" aria-controls="miniV2DemoNotice">
+                ${previewMode ? "Preview" : "Demo"}<span>: ${previewMode ? "changes reset on reload" : "resets on reload"}</span>
+              </button>
+            </div>
             <div class="v2-card-body mini-v2-top-card-body">
-              <p class="mini-v2-top-note">Mock data only. Save Changes lasts until reload; your Google Sheet is not changed.</p>
               <div id="miniV2SummaryLane" class="mini-v2-summary-lane"></div>
             </div>
           </section>
@@ -145,12 +185,13 @@
             <section class="v2-card mini-v2-table-card">
               <div id="miniV2ListStage" class="mini-v2-list-stage">
                 <div class="v2-card-header mini-v2-list-header">
-                  <span>Browse Minis</span>
+                  <span>Browse<span class="mini-v2-browse-title-tail"> Minis</span></span>
                   <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note" hidden></span>
                   <div class="mini-v2-view-switch" role="group" aria-label="Browse view">
                     <button type="button" data-browse-mode="groups" aria-pressed="true">Groups</button>
                     <button type="button" data-browse-mode="individuals" aria-pressed="false">Individuals</button>
                   </div>
+                  <button class="button mini-v2-new-button" type="button" data-action="new-group" aria-label="Create a new miniature group" title="Create a new miniature group">+<span> New</span></button>
                 </div>
                 <div class="v2-card-body mini-v2-table-body">
                   <div class="mini-v2-controls">
@@ -194,6 +235,7 @@
                     </div>
                     <div id="miniV2FacetShell" class="mini-v2-facet-shell">
                       <div id="miniV2FacetBar" class="mini-v2-facet-row"></div>
+                      <span id="miniV2BrowseCount" class="mini-v2-browse-count"></span>
                       <div id="miniV2FacetPopover" class="mini-v2-facet-popover" hidden>
                         <div class="mini-v2-facet-popover-header">
                           <div id="miniV2FacetPopoverTitle" class="mini-v2-facet-popover-title"></div>
@@ -281,6 +323,10 @@
       root.addEventListener("change", handleRootChange);
       root.addEventListener("keydown", handleRootKeydown);
       facetPopoverNode.addEventListener("transitionend", handleFacetPopoverTransitionEnd);
+      const facetLayoutObserver = new ResizeObserver(syncFacetPopoverMetrics);
+      facetLayoutObserver.observe(facetPopoverBodyNode);
+      facetLayoutObserver.observe(facetShellNode);
+      facetLayoutObserver.observe(workspaceNode);
       detailPanelNode.addEventListener("transitionend", handleDetailPanelTransitionEnd);
       document.addEventListener("click", handleDocumentClick);
       document.addEventListener("pointerdown", handleDocumentPointerDown, true);
@@ -291,7 +337,7 @@
       const available = copies.filter(copy => copy.currentLocation === copy.home).length;
       const total = copies.length;
       const checkedOut = total - available;
-      const needsStickers = copies.some(copy => !copy.sticker);
+      const needsStickers = copies.some(copy => getStickerStatus(copy.sticker) === "Missing");
       const sharedSearchText = [
         group.name,
         group.rootId,
@@ -313,6 +359,17 @@
       return { ...group, copies, available, total, checkedOut, needsStickers, sharedSearchText, searchText };
     }
 
+    function getPaintValue(value) {
+      if (value === true || value === "true") return "Painted";
+      if (value === false || value === "false") return "Unpainted";
+      const status = String(value ?? "").trim();
+      return PAINT_OPTIONS.includes(status) ? status : "";
+    }
+
+    function getStickerStatus(value) {
+      return String(value ?? "").trim() ? "Assigned" : "Missing";
+    }
+
     function renderAll(options = {}) {
       const resumedEditor = !state.editor && state.editorDrafts[state.selectedRootId];
       if (resumedEditor) {
@@ -324,7 +381,7 @@
       if (!options.keepSelection) ensureSelectionVisibility(rows);
       const selectedGroup = getSelectedGroup();
       root.classList.toggle("mini-v2-has-detail", !!selectedGroup);
-      renderSummaryLane(rows.length);
+      renderSummaryLane();
       renderListHeader(rows.length);
       renderLocationFilter();
       renderFacetBar();
@@ -366,19 +423,130 @@
       };
     }
 
-    function renderSummaryLane(visibleCount) {
-      const stickerWork = state.groups.filter(group => group.needsStickers).length;
-      const dirtyCount = state.groups.reduce((count, group) => count + group.copies.filter(isDirty).length, 0);
+    function renderSummaryLane() {
+      const copies = state.groups.flatMap(group => group.copies);
+      const missing = copies.filter(copy => getStickerStatus(copy.sticker) === "Missing").length;
+      const away = copies.filter(copy => copy.currentLocation !== copy.home).length;
+      const dirtyCount = copies.filter(isDirty).length;
       const draftCount = editorDraftIds().length;
+      const hasWork = dirtyCount || draftCount || state.deletedGroups.length;
+      const expanded = panel => String(state.summaryPanel === panel);
+      const dashboard = `<button type="button" class="mini-v2-dashboard" disabled aria-label="Dashboard, coming soon">
+        Dashboard <span>Soon</span></button>`;
+      const shortcut = (view, count, label) => `<button type="button" class="mini-v2-summary-shortcut"
+        data-action="collection-view" data-collection-view="${view}" aria-pressed="${state.collectionView === view}"
+        title="${state.collectionView === view ? "Return to your previous browse view" : `Browse individual miniatures: ${label} (applied collection only)`}">
+        <strong>${count}</strong> ${label}</button>`;
+      const shortcuts = shortcut("away", away, "away") + shortcut("missing", missing, missing === 1 ? "missing sticker" : "missing stickers");
 
-      summaryLaneNode.innerHTML = `
-        <span class="mini-v2-chip is-primary">Mock Data</span>
-        <span class="mini-v2-chip">Groups ${state.groups.length}</span>
-        <span class="mini-v2-chip mini-v2-visible-count">Visible ${visibleCount} ${getBrowseUnit(visibleCount)}</span>
-        <span class="mini-v2-chip ${stickerWork ? "is-warn" : ""}" title="${stickerWork} groups with copies needing stickers">Sticker Work ${stickerWork}</span>
-        ${dirtyCount ? `<button type="button" class="mini-v2-chip is-warn" data-action="review-changes" title="Open a miniature with pending location changes">Unsaved ${dirtyCount}</button>` : ""}
-        ${draftCount ? `<button type="button" class="mini-v2-chip is-warn" data-action="review-editor-drafts" title="Resume unapplied editor drafts. Drafts last until reload; only Save applies them.">Drafts ${draftCount}</button>` : ""}
+      const markup = `
+        <div class="mini-v2-collection-overview">
+          <span class="mini-v2-collection-total" title="${copies.length} miniatures across ${state.groups.length} groups. Unapplied drafts are excluded.">
+            <strong>${copies.length}</strong> <span class="mini-v2-summary-wide">miniatures across</span><span class="mini-v2-summary-small">minis<span class="mini-v2-total-groups"> /</span></span>
+            <span class="mini-v2-total-groups"><strong>${state.groups.length}</strong> ${state.groups.length === 1 ? "group" : "groups"}</span>
+          </span>
+          <span class="mini-v2-summary-desktop">${dashboard}</span>
+        </div>
+        <div class="mini-v2-summary-desktop mini-v2-summary-shortcuts">${shortcuts}</div>
+        <div class="mini-v2-summary-compact">
+          <button type="button" class="mini-v2-summary-control ${state.collectionView ? "has-work" : ""}" data-action="toggle-summary" data-summary-panel="collection"
+            aria-label="Collection shortcuts${state.collectionView ? `, viewing ${state.collectionView === "away" ? "away from home" : "missing stickers"}` : ""}"
+            aria-expanded="${expanded("collection")}" aria-controls="miniV2CollectionMenu">${state.collectionView === "away" ? "Away" : state.collectionView === "missing" ? "Stickers" : "Collection"}<span class="mini-v2-summary-caret" aria-hidden="true"></span></button>
+          <div id="miniV2CollectionMenu" class="mini-v2-summary-popover" ${state.summaryPanel === "collection" ? "" : "hidden"}>
+            <p class="mini-v2-summary-heading">Whole collection</p>
+            <p class="mini-v2-summary-empty">${copies.length} miniatures / ${state.groups.length} ${state.groups.length === 1 ? "group" : "groups"}</p>${shortcuts}${dashboard}
+          </div>
+        </div>
+        <div class="mini-v2-summary-recovery">
+          <button type="button" class="mini-v2-summary-control ${hasWork ? "has-work" : ""}" data-action="toggle-summary" data-summary-panel="changes"
+            aria-expanded="${expanded("changes")}" aria-controls="miniV2ChangesMenu"
+            aria-label="Review changes${hasWork ? ", unfinished work or undo available" : ", no pending edits"}">
+            <span class="mini-v2-work-indicator" aria-hidden="true"></span><span class="mini-v2-summary-wide">Review </span>Changes<span class="mini-v2-summary-caret" aria-hidden="true"></span>
+          </button>
+          <div id="miniV2ChangesMenu" class="mini-v2-summary-popover" ${state.summaryPanel === "changes" ? "" : "hidden"}>
+            <p class="mini-v2-summary-heading">Review changes</p>
+            ${dirtyCount ? `<button type="button" data-action="review-changes">Pending locations <span>${dirtyCount} ${dirtyCount === 1 ? "copy" : "copies"}</span></button>` : ""}
+            ${draftCount ? `<button type="button" data-action="review-editor-drafts">Resume drafts <span>${draftCount} ${draftCount === 1 ? "group" : "groups"}</span></button>` : ""}
+            ${state.deletedGroups.length ? `<button type="button" data-action="undo-delete-group">Undo deletion <span>${escapeHtml(state.deletedGroups.at(-1).group.name)}</span></button>` : ""}
+            ${hasWork ? "" : '<p class="mini-v2-summary-empty">No pending edits.</p>'}
+            <p class="mini-v2-summary-footnote">${previewMode ? "Preview" : "Demo"} only. Applied changes and drafts reset on reload.</p>
+          </div>
+        </div>
+        <div id="miniV2DemoNotice" class="mini-v2-summary-popover mini-v2-demo-popover" ${state.summaryPanel === "demo" ? "" : "hidden"}>
+          <p class="mini-v2-summary-heading">${previewMode ? "Real collection, temporary changes" : "Mock data only"}</p>
+          <p>${previewMode ? "This preview reads the imported snapshot in 2.0. Save, Create, Delete, and location changes only affect this browser session. Reload restores the imported collection; neither spreadsheet is changed by the app. The old tracker is not synchronized." : "Save applies changes in this browser until reload. Your Google Sheet is not read or changed."}</p>
+        </div>
       `;
+      // Editor blur/change can follow pointerdown on the banner; keep unchanged buttons alive.
+      if (markup !== summaryMarkup) {
+        summaryLaneNode.innerHTML = markup;
+        summaryMarkup = markup;
+      }
+      root.querySelector('[data-summary-panel="demo"]').setAttribute("aria-expanded", expanded("demo"));
+    }
+
+    function toggleSummaryPanel(panel) {
+      state.summaryPanel = state.summaryPanel === panel ? "" : panel;
+      renderSummaryLane();
+      focusSummaryTrigger(panel);
+    }
+
+    function focusSummaryTrigger(panel) {
+      const trigger = root.querySelector(`[data-summary-panel="${panel}"]`);
+      if (trigger?.getClientRects().length) trigger.focus({ preventScroll: true });
+      else root.querySelector('[data-summary-panel="changes"]').focus({ preventScroll: true });
+    }
+
+    function matchesCollectionView(copy) {
+      if (state.collectionView === "away") return copy.currentLocation !== copy.home;
+      if (state.collectionView === "missing") return getStickerStatus(copy.sticker) === "Missing";
+      return true;
+    }
+
+    function openCollectionView(view) {
+      if (!["away", "missing"].includes(view)) return;
+      if (state.collectionView === view) { restorePreviousBrowse(); return; }
+      // Keep the original browse context even when moving between collection shortcuts.
+      if (!state.previousBrowse) state.previousBrowse = {
+        browseMode: state.browseMode, search: state.search, locationFilter: state.locationFilter,
+        filtersApplied: JSON.parse(JSON.stringify(state.filtersApplied)), sort: { ...state.sort },
+        selectedRootId: state.selectedRootId, selectedCopyId: state.selectedCopyId,
+        browseScroll: { ...state.browseScroll }, scroll: captureScrollState()
+      };
+      leaveEditor();
+      state.collectionView = view;
+      state.browseMode = "individuals";
+      state.search = "";
+      state.locationFilter = "all";
+      state.filtersApplied = createEmptyFilterState();
+      state.sort = { key: "", direction: "" };
+      state.openFacetKey = "";
+      state.locationMenuOpen = false;
+      state.locationMenuSearch = "";
+      state.summaryPanel = "";
+      clearTimeout(copyRevealTimer);
+      const candidates = getBrowseRows().filter(row => row.group.rootId === state.selectedRootId);
+      const selected = candidates.find(row => row.copy.id === state.selectedCopyId) || candidates[0];
+      state.selectedCopyId = selected?.copy.id || "";
+      if (!selected) state.selectedRootId = "";
+      const scroll = captureScrollState();
+      scroll.tableTop = 0;
+      scroll.tableLeft = 0;
+      renderAllPreservingScroll(scroll);
+      searchInputNode.focus({ preventScroll: true });
+    }
+
+    function restorePreviousBrowse() {
+      const previous = state.previousBrowse;
+      if (!previous) return;
+      leaveEditor();
+      clearTimeout(copyRevealTimer);
+      const { scroll, ...browse } = previous;
+      Object.assign(state, browse, { previousBrowse: null, collectionView: "", summaryPanel: "",
+        openFacetKey: "", locationMenuOpen: false, locationMenuSearch: "" });
+      if (!getSelectedGroup()) { state.selectedRootId = ""; state.selectedCopyId = ""; }
+      renderAllPreservingScroll(scroll, { keepSelection: true });
+      searchInputNode.focus({ preventScroll: true });
     }
 
     function getBrowseUnit(count) {
@@ -388,6 +556,15 @@
 
     function renderListHeader(visibleCount) {
       listHeaderNoteNode.textContent = `${visibleCount} ${getBrowseUnit(visibleCount)} shown`;
+      const countNode = document.getElementById("miniV2BrowseCount");
+      const scope = state.collectionView === "away" ? "Away from home" : state.collectionView === "missing" ? "Missing stickers" : "";
+      countNode.textContent = scope ? `${scope}: ${visibleCount}` : `${visibleCount} ${getBrowseUnit(visibleCount)}`;
+      countNode.title = scope ? `${visibleCount} ${getBrowseUnit(visibleCount)} shown: ${scope.toLowerCase()}` : listHeaderNoteNode.textContent;
+      const clear = root.querySelector('[data-action="clear-filters"]');
+      clear.textContent = scope ? "Back" : "Clear";
+      clear.title = scope ? "Return to your previous browse view and filters" : "Clear all browse filters";
+      searchInputNode.placeholder = scope ? `Search ${scope.toLowerCase()}...` : "Search name, sticker, or details...";
+      searchInputNode.setAttribute("aria-label", scope ? `Search within ${scope.toLowerCase()}` : "Search name, sticker, or details");
       root.querySelectorAll("button[data-browse-mode]").forEach(button => {
         button.setAttribute("aria-pressed", String(button.dataset.browseMode === state.browseMode));
       });
@@ -467,8 +644,9 @@
     function getFacetCount(facetKey) {
       if (facetKey === "more") {
         return state.filtersApplied.roles.length
-          + (state.filtersApplied.paintedOnly ? 1 : 0)
-          + (state.filtersApplied.needsStickersOnly ? 1 : 0);
+          + state.filtersApplied.paints.length
+          + (state.filtersApplied.set ? 1 : 0)
+          + state.filtersApplied.stickers.length;
       }
 
       const values = state.filtersApplied[facetKey];
@@ -478,8 +656,9 @@
     function clearOpenFacetSelections() {
       if (state.openFacetKey === "more") {
         state.filtersApplied.roles = [];
-        state.filtersApplied.paintedOnly = false;
-        state.filtersApplied.needsStickersOnly = false;
+        state.filtersApplied.paints = [];
+        state.filtersApplied.set = "";
+        state.filtersApplied.stickers = [];
         return;
       }
 
@@ -499,11 +678,6 @@
         nextValues.push(value);
       }
       state.filtersApplied[kind] = nextValues;
-    }
-
-    function toggleAppliedFacetFlag(flagKey) {
-      if (!(flagKey in state.filtersApplied)) return;
-      state.filtersApplied[flagKey] = !state.filtersApplied[flagKey];
     }
 
     function renderFacetFlyout() {
@@ -543,6 +717,7 @@
             animateFacetPopoverSwap();
           }
         }
+        syncFacetPopoverMetrics();
         return;
       }
 
@@ -558,6 +733,31 @@
         }
         facetHideTimer = null;
       }, 180);
+    }
+
+    function syncFacetPopoverMetrics() {
+      if (!facetPopoverBodyNode) return;
+      if (state.openFacetKey === "more") {
+        const workspace = workspaceNode.getBoundingClientRect();
+        const shell = facetShellNode.getBoundingClientRect();
+        const below = Math.min(window.innerHeight, workspace.bottom) - shell.bottom - 16;
+        const above = shell.top - Math.max(0, workspace.top) - 16;
+        const flipped = below < 160 && above > below;
+        facetPopoverNode.setAttribute("data-facet-placement", flipped ? "above" : "below");
+        const height = `${Math.max(80, Math.floor(flipped ? above : below))}px`;
+        if (facetPopoverNode.style.getPropertyValue("--mini-v2-facet-available-height") !== height) {
+          facetPopoverNode.style.setProperty("--mini-v2-facet-available-height", height);
+        }
+      } else {
+        facetPopoverNode.removeAttribute("data-facet-placement");
+      }
+      // Spend existing right padding on a non-overlay scrollbar, not column width.
+      const width = state.openFacetKey === "more"
+        ? facetPopoverBodyNode.offsetWidth - facetPopoverBodyNode.clientWidth : 0;
+      const value = `${width}px`;
+      if (facetPopoverBodyNode.style.getPropertyValue("--mini-v2-facet-scrollbar-width") !== value) {
+        facetPopoverBodyNode.style.setProperty("--mini-v2-facet-scrollbar-width", value);
+      }
     }
 
     function animateFacetPopoverHeight(startHeight) {
@@ -595,37 +795,44 @@
     }
 
     function renderFacetFlyoutBody(config) {
-      if (config.key === "sizes") {
-        return renderFacetTileGrid("sizes", FILTER_OPTIONS.sizes, state.filtersApplied.sizes, "is-three-col");
-      }
-
-      if (config.key === "creatureTypes") {
-        return renderFacetTileGrid("creatureTypes", FILTER_OPTIONS.creatureTypes, state.filtersApplied.creatureTypes, "is-three-col");
-      }
-
-      if (config.key === "races") {
-        return renderFacetTileGrid("races", FILTER_OPTIONS.races, state.filtersApplied.races, "is-three-col");
-      }
-
-      if (config.key === "sexes") {
-        return renderFacetTileGrid("sexes", FILTER_OPTIONS.sexes, state.filtersApplied.sexes, "is-three-col");
+      if (Object.hasOwn(FACET_FIELDS, config.key)) {
+        return renderFacetTileGrid(config.key, getFacetOptions(config.key), state.filtersApplied[config.key], "is-three-col");
       }
 
       if (config.key === "more") {
         return `
           <div class="mini-v2-facet-more">
-            ${renderFacetGroup("Role", renderFacetTileGrid("roles", FILTER_OPTIONS.roles, state.filtersApplied.roles, "is-three-col"))}
-            ${renderFacetGroup("Collection", `
-              <div class="mini-v2-facet-tile-grid is-two-col">
-                ${renderFacetFlagTile("paintedOnly", "Painted only", state.filtersApplied.paintedOnly)}
-                ${renderFacetFlagTile("needsStickersOnly", "Needs stickers only", state.filtersApplied.needsStickersOnly)}
-              </div>
-            `)}
+            ${renderFacetGroup("Role", renderFacetTileGrid("roles", getFacetOptions("roles"), state.filtersApplied.roles, "is-three-col"))}
+            ${renderSetFilter()}
+            ${renderFacetGroup("Paint status", renderFacetTileGrid("paints", PAINT_OPTIONS, state.filtersApplied.paints, "is-three-col mini-v2-facet-paint-grid"))}
+            ${renderFacetGroup("Stickers", renderFacetTileGrid("stickers", STICKER_FILTER_OPTIONS, state.filtersApplied.stickers, "is-three-col"))}
           </div>
         `;
       }
 
       return "";
+    }
+
+    function getFacetOptions(kind) {
+      const known = FILTER_OPTIONS[kind];
+      const field = FACET_FIELDS[kind];
+      const extra = [...new Set(state.groups.map(group => group[field]).concat(state.filtersApplied[kind]))]
+        .filter(value => value && value !== UNSPECIFIED_VALUE && !known.includes(value))
+        .sort(compareText);
+      return [...known, ...extra, UNSPECIFIED_VALUE];
+    }
+
+    function renderSetFilter() {
+      const selected = state.filtersApplied.set;
+      const options = [...new Set([...state.sets, ...state.groups.map(group => group.set), selected, "n/a", UNSPECIFIED_VALUE])]
+        .filter(Boolean).sort(compareText);
+      return `<div class="mini-v2-facet-group">
+        <label class="mini-v2-facet-group-label" for="miniV2SetFilter">Set</label>
+        <select id="miniV2SetFilter" class="mini-v2-facet-select" data-filter-set title="${escapeHtml(selected || "All sets")}">
+          <option value="">All sets</option>
+          ${options.map(value => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}
+        </select>
+      </div>`;
     }
 
     function getFacetConfigs() {
@@ -656,6 +863,11 @@
     }
 
     function renderFacetTile(kind, value, isSelected) {
+      const label = kind === "paints" && value === "Work in Progress" ? "In Progress" : value;
+      const title = kind === "stickers"
+        ? value === "Assigned" ? "Copies with an ID or explicit n/a; groups match if any copy qualifies."
+          : "Copies with a blank ID; groups match if any copy qualifies."
+        : value;
       return `
         <button
           class="mini-v2-facet-tile ${isSelected ? "is-selected" : ""}"
@@ -663,24 +875,11 @@
           data-action="toggle-facet-value"
           data-facet-kind="${escapeHtml(kind)}"
           data-facet-value="${escapeHtml(value)}"
+          title="${escapeHtml(title)}"
+          aria-label="${escapeHtml(value)}"
           aria-pressed="${isSelected ? "true" : "false"}"
         >
           <span class="mini-v2-facet-tile-check" aria-hidden="true">${isSelected ? "x" : ""}</span>
-          <span class="mini-v2-facet-tile-label">${escapeHtml(value)}</span>
-        </button>
-      `;
-    }
-
-    function renderFacetFlagTile(flagKey, label, enabled) {
-      return `
-        <button
-          class="mini-v2-facet-tile ${enabled ? "is-selected" : ""}"
-          type="button"
-          data-action="toggle-facet-flag"
-          data-facet-flag="${escapeHtml(flagKey)}"
-          aria-pressed="${enabled ? "true" : "false"}"
-        >
-          <span class="mini-v2-facet-tile-check" aria-hidden="true">${enabled ? "x" : ""}</span>
           <span class="mini-v2-facet-tile-label">${escapeHtml(label)}</span>
         </button>
       `;
@@ -769,6 +968,7 @@
       detailHeaderTitleNode.hidden = editing;
       const nameInput = document.getElementById("miniV2EditName");
       nameInput.hidden = !editing;
+      nameInput.placeholder = "Miniature name";
 
       if (group && editing) {
         detailEmptyNode.hidden = true;
@@ -816,6 +1016,7 @@
 
       detailContentNode.innerHTML = `
         <div class="mini-v2-detail-panel">
+          ${getBrowseRows().some(row => row.group.rootId === group.rootId) ? "" : '<p class="mini-v2-editor-scope" role="status">This group is outside your current browse filters.</p>'}
           <section class="mini-v2-detail-group">
             <div class="mini-v2-detail-group-title">Details</div>
             <div class="mini-v2-detail-grid">
@@ -831,7 +1032,7 @@
             <div class="mini-v2-detail-group-title">Miniature</div>
             <div class="mini-v2-product-grid">
               ${renderReadCard("Set", collectionSummary, { marquee: true, wide: true })}
-              ${renderReadCard("Paint", typeof group.paint === "boolean" ? (group.paint ? "Painted" : "Unpainted") : "Not specified")}
+              ${renderReadCard("Paint", getPaintValue(group.paint) || "—")}
             </div>
           </section>
 
@@ -841,14 +1042,14 @@
             <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
               <button class="button mini-v2-copy-btn" type="button" data-action="reset-changes" title="Discard pending location changes for this entire group"${dirtyCount ? "" : " disabled"}>Reset</button>
               <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="set-all-home" title="Stage all ${group.total} copies in this group home, including copies outside the browse filter"${canSetAllHome ? "" : " disabled"}>Set All Home</button>
-              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-changes" title="Apply all pending location changes for this group in mock memory only"${dirtyCount ? "" : " disabled"}>Save Changes</button>
+              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-changes" title="Apply pending location changes in this browser until reload; no spreadsheet changes"${dirtyCount ? "" : " disabled"}>Save Changes</button>
             </div>
           </section>
 
           <section class="mini-v2-detail-group">
             <div class="mini-v2-note-card">
               <div class="mini-v2-note-label">Notes</div>
-              <div class="mini-v2-note-body" title="${escapeHtml(group.notes || "No notes yet.")}">${escapeHtml(group.notes || "No notes yet.")}</div>
+              ${renderReadValue(group.notes || "No notes yet.", { marquee: true, className: "mini-v2-note-body" })}
             </div>
           </section>
         </div>
@@ -858,20 +1059,22 @@
     }
 
     function editorSnapshot(editor = state.editor) {
-      return editor ? JSON.stringify({ fields: editor.fields, copies: editor.copies }) : "";
+      return editor ? JSON.stringify({ fields: editor.fields, copies: editor.copies,
+        addedCopies: editor.addedCopies, removedCopyIds: editor.removedCopyIds }) : "";
     }
 
     function editorHasChanges() {
-      return !!state.editor && editorSnapshot() !== state.editor.initial;
+      return !!state.editor && (state.editor.isNew || editorSnapshot() !== state.editor.initial);
     }
 
     function editorDraftIds() {
       return Array.from(new Set([...Object.keys(state.editorDrafts), ...(editorHasChanges() ? [state.editor.rootId] : [])]));
     }
 
-    function beginEditor() {
+    function beginEditor(isNew = false, returnSelection = null) {
       const group = getSelectedGroup();
       if (!group || state.editor) return;
+      isNew = isNew || Object.hasOwn(state.newGroups, group.rootId);
       clearTimeout(copyRevealTimer);
       clearTimeout(detailMarqueeSyncTimer);
       detailPanelNode.style.setProperty("--mini-v2-editor-header-height", `${detailPanelNode.querySelector(".mini-v2-detail-header").getBoundingClientRect().height}px`);
@@ -879,11 +1082,16 @@
       document.getElementById("miniV2EditName").removeAttribute("aria-describedby");
       state.editor = {
         rootId: group.rootId,
+        isNew,
+        returnSelection,
         fields: Object.fromEntries(EDIT_FIELDS.map(key => [key, key === "paint"
-          ? (typeof group.paint === "boolean" ? String(group.paint) : "") : String(group[key] ?? "")])),
+          ? getPaintValue(group.paint) : String(group[key] ?? "")])),
         copies: Object.fromEntries(group.copies.map(copy => [copy.id, {
-          note: copy.note || "", currentLocation: getEffectiveLocation(copy)
+          note: copy.note || "", sticker: copy.sticker || "", currentLocation: getEffectiveLocation(copy)
         }])),
+        stickerCursors: [],
+        addedCopies: [],
+        removedCopyIds: [],
         hasPendingLocations: group.copies.some(isDirty),
         readScroll: captureScrollState()
       };
@@ -892,6 +1100,226 @@
       scroll.detailTop = 0;
       renderAllPreservingScroll(scroll, { keepSelection: true });
       document.getElementById("miniV2EditName").focus({ preventScroll: true });
+    }
+
+    function newMockId(prefix) {
+      return `${prefix}-${Date.now().toString(36)}-${state.nextMockId++}`;
+    }
+
+    function beginNewGroup() {
+      const existingId = Object.keys(state.newGroups)[0];
+      if (state.editor?.isNew) {
+        document.getElementById("miniV2EditName").focus({ preventScroll: true });
+        revealDetailOnSmallScreen();
+        return;
+      }
+      const returnSelection = { rootId: state.selectedRootId, copyId: state.selectedCopyId };
+      leaveEditor();
+      if (existingId) {
+        state.selectedRootId = existingId;
+        state.selectedCopyId = "";
+        renderAllPreservingScroll(null, { keepSelection: true });
+      } else {
+        const rootId = newMockId("mock-group");
+        state.newGroups[rootId] = enrichGroup({
+          rootId, ...Object.fromEntries(EDIT_FIELDS.map(key => [key, ""])),
+          originalOrder: Math.max(-1, ...state.groups.map(group => group.originalOrder)) + 1,
+          copies: []
+        });
+        state.selectedRootId = rootId;
+        state.selectedCopyId = "";
+        beginEditor(true, returnSelection);
+        addEditorCopy(false);
+      }
+      document.getElementById("miniV2EditName").focus({ preventScroll: true });
+      revealDetailOnSmallScreen();
+    }
+
+    function editorBaseCopies(group = getSelectedGroup()) {
+      return state.editor ? group.copies.concat(state.editor.addedCopies) : group.copies;
+    }
+
+    function retainedEditorCopies(group = getSelectedGroup()) {
+      return editorBaseCopies(group).filter(copy => !state.editor?.removedCopyIds.includes(copy.id));
+    }
+
+    function sequentialStickerIndex(value) {
+      const match = /^([A-Z])(\d{2})$/.exec(String(value || "").trim().toUpperCase());
+      return match ? (match[1].charCodeAt(0) - 65) * 100 + Number(match[2]) : null;
+    }
+
+    function stickerCode(index) {
+      return index < 2600
+        ? String.fromCharCode(65 + Math.floor(index / 100)) + String(index % 100).padStart(2, "0") : "";
+    }
+
+    function loadNextStickerStart() {
+      if (stickerCatalog) return 0;
+      try {
+        const stored = previewMode ? null : window.localStorage.getItem(NEXT_STICKER_STORAGE_KEY);
+        if (stored === "end") return 2600;
+        const index = sequentialStickerIndex(stored);
+        if (index !== null) return index;
+      } catch {
+        // Embedded browsers may block local storage; collection scanning still works.
+      }
+      let latest = -1;
+      state.groups.forEach(group => group.copies.forEach(copy => {
+        const index = sequentialStickerIndex(copy.sticker);
+        if (index !== null) latest = Math.max(latest, index);
+      }));
+      return latest + 1;
+    }
+
+    function availableStickerFrom(start, used) {
+      if (stickerCatalog) {
+        const free = code => !used.has(code);
+        return stickerCatalog.find(code => sequentialStickerIndex(code) >= start && free(code))
+          || stickerCatalog.find(free) || "";
+      }
+      for (let index = start; index < 2600; index++) {
+        const code = stickerCode(index);
+        if (!used.has(code)) return code;
+      }
+      return "";
+    }
+
+    function editorStickerCursor(editor) {
+      return editor?.stickerCursors.findLast(cursor => !editor.removedCopyIds.includes(cursor.copyId)
+        && String(editor.copies[cursor.copyId]?.sticker || "").trim().toUpperCase() === cursor.sticker);
+    }
+
+    function preferredStickerCursor() {
+      let preferred = { start: state.nextStickerStart, revision: state.nextStickerRevision };
+      [state.editor, ...Object.values(state.editorDrafts)].forEach(editor => {
+        const cursor = editorStickerCursor(editor);
+        if (cursor && cursor.revision > preferred.revision) preferred = cursor;
+      });
+      return preferred;
+    }
+
+    function recordStickerCursor(copyId, start) {
+      state.editor.stickerCursors.push({ copyId, start, revision: ++state.stickerCursorRevision,
+        sticker: String(state.editor.copies[copyId].sticker).trim().toUpperCase() });
+    }
+
+    function rememberNextStickerStart(editor) {
+      const assigned = new Set(state.groups.flatMap(group => group.copies)
+        .map(copy => String(copy.sticker || "").trim().toUpperCase()));
+      // Only the saved editor can commit a sequence preference; other drafts remain temporary.
+      const cursor = editorStickerCursor(editor);
+      if (cursor && cursor.revision > state.nextStickerRevision) {
+        state.nextStickerStart = cursor.start;
+        state.nextStickerRevision = cursor.revision;
+      }
+      const next = availableStickerFrom(state.nextStickerStart, assigned);
+      state.nextStickerStart = next ? sequentialStickerIndex(next) : 2600;
+      // A preview reload must also reset ID suggestions, regardless of old mock preferences.
+      if (previewMode || stickerCatalog) return;
+      try {
+        window.localStorage.setItem(NEXT_STICKER_STORAGE_KEY, next || "end");
+      } catch {
+        // The in-memory counter remains usable when storage is unavailable.
+      }
+    }
+
+    function reservedStickerIds(excludeRootId = "") {
+      const used = new Set();
+      const reserve = value => {
+        const id = String(value || "").trim().toUpperCase();
+        if (id && id !== "N/A") used.add(id);
+      };
+      state.groups.filter(group => group.rootId !== excludeRootId)
+        .concat(state.deletedGroups.map(record => record.group))
+        .forEach(group => group.copies.forEach(copy => reserve(copy.sticker)));
+      [state.editor, ...Object.values(state.editorDrafts), ...state.deletedGroups.map(record => record.editor)]
+        .filter(editor => editor && editor.rootId !== excludeRootId)
+        .forEach(editor => Object.values(editor.copies).forEach(copy => reserve(copy.sticker)));
+      return used;
+    }
+
+    function nextStickerSuggestion() {
+      // Scan reservations instead of consuming a code when it is merely suggested.
+      return availableStickerFrom(preferredStickerCursor().start, reservedStickerIds());
+    }
+
+    function nextBlankStickerCopy() {
+      return state.editor && retainedEditorCopies().find(copy => !String(state.editor.copies[copy.id]?.sticker || "").trim());
+    }
+
+    function syncNextStickerAction() {
+      const button = detailContentNode.querySelector('[data-action="apply-next-sticker"]');
+      if (!button) return;
+      const code = nextStickerSuggestion();
+      const target = nextBlankStickerCopy();
+      button.textContent = code ? `Apply ${code}` : "Apply next ID";
+      button.disabled = !code || !target;
+      button.title = !code ? (stickerCatalog ? "No available IDs remain in the sticker catalog." : "No available IDs remain through Z99. Enter a different starting ID.")
+        : !target ? "Add a new copy or leave a copy's ID blank to apply this sticker."
+        : `Apply ${code} to copy ${target.miniNumber}, the first blank ID. Does not add a row or change the selection.`;
+    }
+
+    function applyNextSticker() {
+      const copy = nextBlankStickerCopy();
+      const code = nextStickerSuggestion();
+      if (!copy || !code) return;
+      const start = preferredStickerCursor().start;
+      state.editor.copies[copy.id].sticker = code;
+      recordStickerCursor(copy.id, start);
+      const input = detailContentNode.querySelector(`[data-edit-copy-sticker="${copy.id}"]`);
+      input.value = code;
+      input.title = code;
+      clearEditorError();
+      syncEditorFeedback();
+    }
+
+    function refreshEditorCopies() {
+      const scroll = captureScrollState();
+      const grid = detailContentNode.querySelector(".mini-v2-copy-grid");
+      grid.outerHTML = renderCopyGrid(getSelectedGroup());
+      syncEditorFeedback();
+      syncDetailCopyTarget();
+      restoreScrollState(scroll);
+    }
+
+    function addEditorCopy(focus = true) {
+      if (!state.editor) return;
+      const group = getSelectedGroup();
+      const number = Math.max(0, ...editorBaseCopies(group).map(copy => copy.miniNumber || 0)) + 1;
+      const copy = { id: newMockId("mock-copy"), miniNumber: number, sticker: "", note: "",
+        home: state.editor.fields.home, currentLocation: state.editor.fields.home };
+      state.editor.addedCopies.push(copy);
+      state.editor.copies[copy.id] = { note: "", sticker: "", currentLocation: copy.currentLocation, followsHome: true };
+      refreshEditorCopies();
+      if (focus) {
+        const input = detailContentNode.querySelector(`[data-edit-copy-sticker="${copy.id}"]`);
+        input.focus({ preventScroll: true });
+        input.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    }
+
+    function removeEditorCopy(copyId) {
+      if (!state.editor) return;
+      const copy = editorBaseCopies().find(item => item.id === copyId);
+      if (!copy) return;
+      if (!state.editor.addedCopies.includes(copy) && retainedEditorCopies().length <= 1) {
+        showEditorError("A group needs at least one copy. Use Delete group to remove the whole entry.",
+          detailContentNode.querySelector('[data-action="delete-group"]'));
+        return;
+      }
+      if (state.editor.addedCopies.includes(copy)) {
+        state.editor.addedCopies = state.editor.addedCopies.filter(item => item.id !== copyId);
+        delete state.editor.copies[copyId];
+      } else state.editor.removedCopyIds.push(copyId);
+      refreshEditorCopies();
+      detailContentNode.querySelector('[data-action="add-copy"]').focus({ preventScroll: true });
+    }
+
+    function undoEditorCopyRemoval(copyId) {
+      if (!state.editor) return;
+      state.editor.removedCopyIds = state.editor.removedCopyIds.filter(id => id !== copyId);
+      refreshEditorCopies();
+      detailContentNode.querySelector(`[data-remove-copy="${copyId}"]`).focus({ preventScroll: true });
     }
 
     function leaveEditor() {
@@ -910,15 +1338,21 @@
     function discardEditor() {
       const scroll = state.editor?.readScroll;
       if (!state.editor) return;
+      const editor = state.editor;
       delete state.editorDrafts[state.editor.rootId];
       state.editor = null;
+      if (editor.isNew) {
+        delete state.newGroups[editor.rootId];
+        state.selectedRootId = editor.returnSelection?.rootId || "";
+        state.selectedCopyId = editor.returnSelection?.copyId || "";
+      }
       const currentScroll = captureScrollState();
       if (scroll) {
         currentScroll.detailTop = scroll.detailTop;
         currentScroll.detailTableLeft = scroll.detailTableLeft;
       }
       renderAllPreservingScroll(currentScroll, { keepSelection: true });
-      root.querySelector('[data-action="edit-mini"]').focus({ preventScroll: true });
+      root.querySelector(getSelectedGroup() ? '[data-action="edit-mini"], [data-action="discard-edit"]' : '[data-action="new-group"]').focus({ preventScroll: true });
     }
 
     function renderEditSelect(key, label, options) {
@@ -930,9 +1364,11 @@
 
     function renderEditOptions(key, options) {
       const value = state.editor.fields[key];
-      const choices = Array.from(new Set([...(key === "home" && value ? [] : [""]), ...options, value]));
+      const choices = key === "paint" ? ["", ...PAINT_OPTIONS] : Array.from(new Set([
+        ...(key === "home" && value ? [] : [""]), ...options,
+        ...(Object.hasOwn(EDIT_REQUIRED_CHOICES, key) ? [UNSPECIFIED_VALUE] : []), value]));
       return choices.map(option =>
-        `<option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(option || "Not specified")}</option>`).join("");
+        `<option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(option)}</option>`).join("");
     }
 
     function renderEditor(group) {
@@ -941,7 +1377,8 @@
         <section class="mini-v2-detail-group">
           <div class="mini-v2-editor-section-heading">
             <div class="mini-v2-detail-group-title">Details</div>
-            <span class="mini-v2-editor-scope">Shared by all ${group.total} ${group.total === 1 ? "copy" : "copies"}</span></div>
+            <span class="mini-v2-editor-scope" data-copy-scope></span></div>
+          ${state.editor.isNew ? '<p class="mini-v2-editor-scope mini-v2-new-match" hidden></p>' : ""}
           <div class="mini-v2-detail-grid">
             ${renderEditSelect("size", "Size", FILTER_OPTIONS.sizes)}
             ${renderEditSelect("creatureType", "Creature Type", FILTER_OPTIONS.creatureTypes)}
@@ -956,20 +1393,20 @@
             <div class="mini-v2-edit-field mini-v2-set-field">
               <div class="mini-v2-editor-set-labels"><label class="mini-v2-field-label" for="miniV2EditSet">Set</label><label class="mini-v2-field-label" for="miniV2EditSetNumber">#</label></div>
               <div class="mini-v2-editor-set"><select id="miniV2EditSet" data-edit-field="set" title="Set name">${renderEditOptions("set", state.sets)}</select>
-                <input id="miniV2EditSetNumber" data-edit-field="setNumber" aria-label="Set number" inputmode="numeric" maxlength="3" value="${escapeHtml(fields.setNumber)}"></div>
+                <input id="miniV2EditSetNumber" data-edit-field="setNumber" aria-label="Set number" maxlength="3" value="${escapeHtml(fields.setNumber)}"></div>
             </div>
-            <div class="mini-v2-edit-field">
-              <span class="mini-v2-field-label">Paint</span>
-              <label class="mini-v2-editor-paint"><input type="checkbox" data-edit-field="paint" aria-label="Painted"${fields.paint === "true" ? " checked" : ""}>
-                <span class="mini-v2-editor-paint-value">Painted</span></label>
-            </div>
+            ${renderEditSelect("paint", "Paint", PAINT_OPTIONS)}
           </div>
         </section>
         <section class="mini-v2-detail-group mini-v2-inventory-block">
           <div class="mini-v2-detail-group-title">Inventory</div>
           ${renderCopyGrid(group)}
           <p class="mini-v2-editor-home-note" hidden>Changing Home does not move copies. Current locations stay as shown.</p>
-          <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
+          <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row mini-v2-copy-edit-actions">
+            <div class="mini-v2-copy-add-actions">
+              <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="add-copy">+ Add new copy</button>
+              <button class="button mini-v2-copy-btn mini-v2-secondary mini-v2-next-sticker" type="button" data-action="apply-next-sticker" disabled>Apply next ID</button>
+            </div>
             <button class="button mini-v2-copy-btn mini-v2-secondary" type="button" data-action="edit-all-home">Set All Home</button>
           </div>
         </section>
@@ -979,11 +1416,19 @@
         </section>
         <div class="mini-v2-editor-footer">
           <p id="miniV2EditorError" class="mini-v2-editor-error" role="alert" hidden></p>
-          <div class="mini-v2-editor-save-row"><span class="mini-v2-editor-save-note">Applies details, copy notes &amp; locations</span>
+          <div class="mini-v2-editor-save-row">
+            ${state.editor.isNew ? '<span class="mini-v2-editor-save-note">Creates this group and its copies</span>' : '<button class="mini-v2-delete-link" type="button" data-action="delete-group">Delete group</button>'}
             <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
-              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-edit" title="Apply all shown details, copy notes, and locations for this group, including earlier pending locations, in mock memory only">Save Changes</button>
+              <button class="button mini-v2-copy-btn mini-v2-primary" type="button" data-action="save-edit" title="Apply the shown group and copies in this browser until reload; no spreadsheet changes"${state.editor.isNew ? " disabled" : ""}>${state.editor.isNew ? "Create Group" : "Save Changes"}</button>
             </div>
           </div>
+          ${state.editor.isNew ? "" : `<div class="mini-v2-delete-confirm" hidden role="group" aria-label="Confirm group deletion">
+            <p>Delete <strong>${escapeHtml(group.name)}</strong> and all ${group.total} ${group.total === 1 ? "copy" : "copies"}?</p>
+            <div class="mini-v2-inventory-actions mini-v2-inventory-actions-row">
+              <button class="button mini-v2-copy-btn" type="button" data-action="cancel-delete-group">Cancel</button>
+              <button class="button mini-v2-copy-btn mini-v2-delete-button" type="button" data-action="confirm-delete-group">Delete Group</button>
+            </div>
+          </div>`}
         </div>
       </div>`;
     }
@@ -991,111 +1436,235 @@
     function editorCopy(copy) {
       const draft = state.editor.copies[copy.id];
       const group = getSelectedGroup();
-      return { ...copy, ...draft, home: state.editor.fields.home !== group.home ? state.editor.fields.home : copy.home };
+      const usesDraftHome = state.editor.addedCopies.includes(copy) || state.editor.fields.home !== group.home;
+      return { ...copy, ...draft, home: usesDraftHome ? state.editor.fields.home : copy.home };
     }
 
     function syncEditorFeedback() {
       if (!state.editor) return;
       const changed = editorHasChanges();
-      const paint = detailContentNode.querySelector('[data-edit-field="paint"]');
-      paint.checked = state.editor.fields.paint === "true";
-      paint.indeterminate = state.editor.fields.paint === "";
-      paint.setAttribute("aria-checked", paint.indeterminate ? "mixed" : String(paint.checked));
-      paint.title = paint.indeterminate ? "Paint status is not specified; check to mark painted" : "Paint status for all copies in this group";
-      detailContentNode.querySelector('.mini-v2-editor-paint-value').textContent = paint.indeterminate
-        ? "Not specified" : "Painted";
       detailContentNode.querySelector('[data-edit-field="set"]').title = state.editor.fields.set || "Set not specified";
-      detailHeaderTagsNode.innerHTML = renderDetailTag(changed || state.editor.hasPendingLocations ? "Editing *" : "Editing", "is-neutral");
+      const setNumber = detailContentNode.querySelector('[data-edit-field="setNumber"]');
+      setNumber.disabled = !hasNamedSet(state.editor.fields);
+      setNumber.value = setNumber.disabled ? "" : state.editor.fields.setNumber;
+      setNumber.title = setNumber.disabled ? "Set # does not apply without a named set" : "Set number, such as 40 or 4a";
+      detailHeaderTagsNode.innerHTML = renderDetailTag(state.editor.isNew ? "New" : changed || state.editor.hasPendingLocations ? "Editing *" : "Editing", "is-neutral");
       const save = detailContentNode.querySelector('[data-action="save-edit"]');
-      if (save) save.disabled = !changed && !state.editor.hasPendingLocations;
-      renderSummaryLane(getBrowseRows().length);
+      if (save) {
+        const validationError = state.editor.isNew ? getEditorValidationError() : null;
+        save.disabled = state.editor.isNew ? !!validationError : !changed && !state.editor.hasPendingLocations;
+        save.title = validationError ? validationError.message : "Apply the shown group and copies in this browser until reload; no spreadsheet changes";
+      }
+      renderSummaryLane();
       const group = getSelectedGroup();
+      const copies = retainedEditorCopies(group);
+      detailContentNode.querySelector('[data-copy-scope]').textContent = `Shared by all ${copies.length} ${copies.length === 1 ? "copy" : "copies"}`;
+      const matchNote = detailContentNode.querySelector('.mini-v2-new-match');
+      if (matchNote) {
+        const match = state.groups.find(item => item.name.trim().toLowerCase() === state.editor.fields.name.trim().toLowerCase());
+        matchNote.hidden = !match;
+        matchNote.textContent = match ? `A group named "${match.name}" already exists. To add copies to it, open that group and choose Edit.` : "";
+      }
       detailContentNode.querySelector('.mini-v2-availability-wrap').outerHTML = renderInventoryAvailability(group);
       const homeNote = detailContentNode.querySelector(".mini-v2-editor-home-note");
-      if (homeNote) homeNote.hidden = state.editor.fields.home === group.home;
+      if (homeNote) homeNote.hidden = state.editor.isNew || state.editor.fields.home === group.home;
       const allHome = detailContentNode.querySelector('[data-action="edit-all-home"]');
-      if (allHome) allHome.disabled = !state.editor.fields.home || !group.copies.some(copy => {
+      if (allHome) allHome.disabled = !state.editor.fields.home || !copies.some(copy => {
         const draft = editorCopy(copy);
         return draft.currentLocation !== draft.home;
       });
       detailContentNode.querySelectorAll("[data-detail-copy-id]").forEach(row => {
-        const copy = group.copies.find(copy => copy.id === row.dataset.detailCopyId);
+        const copy = editorBaseCopies(group).find(copy => copy.id === row.dataset.detailCopyId);
+        if (state.editor.removedCopyIds.includes(copy.id)) return;
         const draft = editorCopy(copy);
         const away = draft.currentLocation !== draft.home;
-        const dirty = draft.currentLocation !== copy.currentLocation || draft.note !== (copy.note || "");
+        const dirty = state.editor.addedCopies.includes(copy) || draft.currentLocation !== copy.currentLocation
+          || draft.note !== (copy.note || "") || draft.sticker !== (copy.sticker || "");
         row.classList.toggle("is-away", away);
         row.classList.toggle("is-dirty", dirty);
         const badge = row.querySelector(".mini-v2-copy-status");
         badge.className = `mini-v2-copy-status ${dirty ? "is-dirty" : away ? "is-away" : "is-home"}`;
-        badge.textContent = dirty ? "Unsaved" : away ? "Away" : "Home";
+        badge.textContent = state.editor.addedCopies.includes(copy) ? "New" : dirty ? "Unsaved" : away ? "Away" : "Home";
       });
+      syncNextStickerAction();
+    }
+
+    function clearEditorError() {
+      const error = document.getElementById("miniV2EditorError");
+      if (error) error.hidden = true;
+      root.querySelectorAll('[aria-describedby="miniV2EditorError"]').forEach(node => {
+        node.removeAttribute("aria-invalid");
+        node.removeAttribute("aria-describedby");
+      });
+    }
+
+    function showEditorError(message, target) {
+      const error = document.getElementById("miniV2EditorError");
+      error.textContent = message;
+      error.hidden = false;
+      if (target) {
+        if (target.matches("input, select, textarea")) target.setAttribute("aria-invalid", "true");
+        target.setAttribute("aria-describedby", "miniV2EditorError");
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
     }
 
     function updateEditorInput(target) {
       if (!state.editor) return false;
       const field = target.dataset.editField;
       const copyId = target.dataset.editCopyNote;
+      const stickerCopyId = target.dataset.editCopySticker;
       if (field && EDIT_FIELDS.includes(field)) {
-        state.editor.fields[field] = field === "paint" && target.type === "checkbox" ? String(target.checked) : target.value;
+        state.editor.fields[field] = target.value;
         if (field === "home") {
-          getSelectedGroup().copies.forEach(copy => {
+          retainedEditorCopies().forEach(copy => {
+            if (state.editor.copies[copy.id].followsHome) state.editor.copies[copy.id].currentLocation = state.editor.fields.home;
             const draft = editorCopy(copy);
             const select = Array.from(detailContentNode.querySelectorAll("select[data-copy-id]"))
               .find(node => node.dataset.copyId === copy.id);
             select.innerHTML = renderCopyLocationOptions(draft, draft.currentLocation);
           });
         }
-        if (field === "name" || field === "setNumber") {
-          target.removeAttribute("aria-invalid");
-          target.removeAttribute("aria-describedby");
-          const error = document.getElementById("miniV2EditorError");
-          if (error) error.hidden = true;
-        }
       } else if (copyId && state.editor.copies[copyId]) {
         state.editor.copies[copyId].note = target.value;
+      } else if (stickerCopyId && state.editor.copies[stickerCopyId]) {
+        state.editor.copies[stickerCopyId].sticker = target.value;
+        target.title = target.value || "Sticker not assigned";
+        const index = sequentialStickerIndex(target.value);
+        if (index !== null) recordStickerCursor(stickerCopyId, index + 1);
       } else return false;
+      clearEditorError();
       syncEditorFeedback();
       return true;
+    }
+
+    function getEditorValidationError() {
+      const editor = state.editor;
+      if (!editor.fields.name.trim()) {
+        return { message: "Enter a miniature name before saving.", selector: "#miniV2EditName" };
+      }
+      if (editor.isNew && !editor.fields.home.trim()) {
+        return { message: "Choose a Home before creating this group.", selector: "#miniV2EditHome" };
+      }
+      const initial = JSON.parse(editor.initial);
+      if ((editor.fields.paint || initial.fields.paint) && !PAINT_OPTIONS.includes(editor.fields.paint)) {
+        return { message: "Choose Paint: Painted, Unpainted, or Work in Progress.", selector: '[data-edit-field="paint"]' };
+      }
+      if (editor.isNew) {
+        for (const [key, label] of Object.entries(EDIT_REQUIRED_CHOICES)) {
+          if (!editor.fields[key].trim()) {
+            return { message: key === "paint" ? "Choose Paint: Painted, Unpainted, or Work in Progress."
+              : `Choose ${label} before creating this group. Not specified is an explicit choice.`,
+              selector: `[data-edit-field="${key}"]` };
+          }
+        }
+        if (hasNamedSet(editor.fields) && !editor.fields.setNumber.trim()) {
+          return { message: "Enter Set # for the selected set before creating this group.", selector: "#miniV2EditSetNumber" };
+        }
+      }
+      const copies = retainedEditorCopies();
+      if (!copies.length) {
+        return { message: "Add at least one copy before saving.", selector: '[data-action="add-copy"]' };
+      }
+      const setNumber = editor.fields.setNumber.trim();
+      if (hasNamedSet(editor.fields) && setNumber !== initial.fields.setNumber && !/^(?:\d[a-z\d]{0,2})?$/i.test(setNumber)) {
+        return { message: "Use up to three characters for Set #, starting with a digit (for example, 40 or 4a).", selector: "#miniV2EditSetNumber" };
+      }
+      const group = getSelectedGroup();
+      const assignedStickers = reservedStickerIds(group.rootId);
+      const stickerKey = value => String(value || "").trim().toUpperCase();
+      const stickerChanged = copy => editor.addedCopies.includes(copy)
+        || stickerKey(editorCopy(copy).sticker) !== stickerKey(copy.sticker);
+      copies.filter(copy => !stickerChanged(copy)).forEach(copy => assignedStickers.add(stickerKey(copy.sticker)));
+      for (const copy of copies) {
+        if (editor.addedCopies.includes(copy) && !editorCopy(copy).currentLocation.trim()) {
+          return { message: "Choose a current location for each new copy before saving.",
+            selector: `select[data-copy-id="${copy.id}"]` };
+        }
+        const sticker = (editorCopy(copy).sticker || "").trim().toUpperCase();
+        if (!sticker || sticker === "N/A" || !stickerChanged(copy)) continue;
+        if (assignedStickers.has(sticker)) {
+          return { message: `Sticker ${editorCopy(copy).sticker.trim()} is already assigned. Use a different sticker or leave it blank.`,
+            selector: `[data-edit-copy-sticker="${copy.id}"]` };
+        }
+        assignedStickers.add(sticker);
+      }
+      return null;
     }
 
     function saveEditor() {
       const editor = state.editor;
       if (!editor) return;
-      if (!editor.fields.name.trim()) {
-        const error = document.getElementById("miniV2EditorError");
-        error.hidden = false;
-        error.textContent = "Enter a miniature name before saving.";
-        const name = document.getElementById("miniV2EditName");
-        name.setAttribute("aria-invalid", "true");
-        name.setAttribute("aria-describedby", "miniV2EditorError");
-        name.focus({ preventScroll: true });
+      clearEditorError();
+      if (!editor.isNew && !state.groups.some(item => item.rootId === editor.rootId)) {
+        showEditorError("This group is no longer in the collection. Close and reopen it before saving.");
         return;
       }
-      const setNumber = editor.fields.setNumber.trim();
-      if (setNumber !== JSON.parse(editor.initial).fields.setNumber && !/^\d{0,3}$/.test(setNumber)) {
-        const error = document.getElementById("miniV2EditorError");
-        error.hidden = false;
-        error.textContent = "Use up to three digits for Set #.";
-        const number = document.getElementById("miniV2EditSetNumber");
-        number.setAttribute("aria-invalid", "true");
-        number.setAttribute("aria-describedby", "miniV2EditorError");
-        number.focus({ preventScroll: true });
+      const validationError = getEditorValidationError();
+      if (validationError) {
+        showEditorError(validationError.message, root.querySelector(validationError.selector));
         return;
       }
       const group = getSelectedGroup();
-      const fields = { ...editor.fields, name: editor.fields.name.trim(), setNumber,
-        paint: editor.fields.paint === "" ? null : editor.fields.paint === "true" };
-      const updated = enrichGroup({ ...group, ...fields, copies: group.copies.map(editorCopy) });
-      state.groups = state.groups.map(item => item.rootId === group.rootId ? updated : item);
+      const copies = retainedEditorCopies(group);
+      const setNumber = editor.fields.setNumber.trim();
+      // Unrelated edits must not reinterpret legacy paint values.
+      const paintChanged = editor.fields.paint !== JSON.parse(editor.initial).fields.paint;
+      const fields = { ...editor.fields, name: editor.fields.name.trim(), setNumber: hasNamedSet(editor.fields) ? setNumber : "",
+        paint: paintChanged ? editor.fields.paint || null : group.paint ?? null };
+      const updated = enrichGroup({ ...group, ...fields, copies: copies.map(copy => {
+        const { followsHome, ...value } = editorCopy(copy);
+        return { ...value, sticker: (value.sticker || "").trim() };
+      }) });
+      if (editor.isNew) state.groups.push(updated);
+      else state.groups = state.groups.map(item => item.rootId === group.rootId ? updated : item);
       group.copies.forEach(copy => { delete state.draftLocations[copy.id]; });
       delete state.editorDrafts[group.rootId];
+      delete state.newGroups[group.rootId];
       state.editor = null;
+      rememberNextStickerStart(editor);
+      if (!updated.copies.some(copy => copy.id === state.selectedCopyId)) {
+        state.selectedCopyId = state.browseMode === "individuals" ? updated.copies[0].id : "";
+      }
       state.browseScroll = { groups: null, individuals: null };
       const scroll = captureScrollState();
       scroll.detailTop = editor.readScroll.detailTop;
       scroll.detailTableLeft = editor.readScroll.detailTableLeft;
       renderAllPreservingScroll(scroll, { keepSelection: true });
       root.querySelector('[data-action="edit-mini"]').focus({ preventScroll: true });
+    }
+
+    function deleteSelectedGroup() {
+      const group = getSelectedGroup();
+      if (!group || state.editor?.isNew) return;
+      state.deletedGroups.push({ group, editor: state.editor, selectedCopyId: state.selectedCopyId,
+        draftLocations: Object.fromEntries(group.copies.filter(isDirty).map(copy => [copy.id, state.draftLocations[copy.id]])) });
+      state.groups = state.groups.filter(item => item.rootId !== group.rootId);
+      group.copies.forEach(copy => { delete state.draftLocations[copy.id]; });
+      delete state.editorDrafts[group.rootId];
+      state.editor = null;
+      state.selectedRootId = "";
+      state.selectedCopyId = "";
+      renderAllPreservingScroll();
+      focusSummaryTrigger("changes");
+    }
+
+    function undoGroupDeletion() {
+      const record = state.deletedGroups.at(-1);
+      if (!record) return;
+      // A deleted group's stickers remain reserved while Undo can restore it.
+      leaveEditor();
+      state.deletedGroups.pop();
+      state.groups.push(record.group);
+      state.groups.sort((a, b) => a.originalOrder - b.originalOrder);
+      Object.assign(state.draftLocations, record.draftLocations);
+      state.editorDrafts[record.group.rootId] = record.editor;
+      state.selectedRootId = record.group.rootId;
+      state.selectedCopyId = record.selectedCopyId;
+      renderAllPreservingScroll(null, { keepSelection: true });
+      document.getElementById("miniV2EditName").focus({ preventScroll: true });
+      revealDetailOnSmallScreen();
     }
 
     function renderStatusBadge(group) {
@@ -1128,19 +1697,21 @@
 
     function renderInventoryAvailability(group) {
       let available = 0;
-      let pending = false;
-      group.copies.forEach(copy => {
+      const copies = state.editor ? retainedEditorCopies(group) : group.copies;
+      const total = copies.length;
+      let pending = !!state.editor && (!!state.editor.addedCopies.length || !!state.editor.removedCopyIds.length);
+      copies.forEach(copy => {
         const displayed = state.editor ? editorCopy(copy) : { ...copy, currentLocation: getEffectiveLocation(copy) };
-        if (displayed.currentLocation === displayed.home) available++;
+        if (displayed.home && displayed.currentLocation === displayed.home) available++;
         if (displayed.currentLocation !== copy.currentLocation || displayed.home !== copy.home) pending = true;
       });
-      const tone = statusClass(getStatusKey({ available, total: group.total }));
-      const explanation = pending ? "Includes unsaved Home or location changes." : "Copies at their home location.";
+      const tone = statusClass(getStatusKey({ available, total }));
+      const explanation = pending ? "Includes unsaved copy, Home or location changes." : "Copies at their home location.";
       return `<span class="mini-v2-availability-wrap" title="${explanation}">
         <span class="mini-v2-badge mini-v2-inventory-availability ${tone}"
-          aria-label="${available} of ${group.total} available. ${explanation}">
-          <span class="mini-v2-availability-size" aria-hidden="true">${group.total} / ${group.total}</span>
-          <span class="mini-v2-availability-count">${available} / ${group.total}</span>
+          aria-label="${available} of ${total} available. ${explanation}">
+          <span class="mini-v2-availability-size" aria-hidden="true">${total} / ${total}</span>
+          <span class="mini-v2-availability-count">${available} / ${total}</span>
         </span>
         <span class="mini-v2-availability-pending${pending ? " is-visible" : ""}" aria-hidden="true">*</span>
       </span>`;
@@ -1156,7 +1727,7 @@
           ${state.editor ? '<label class="mini-v2-field-label" for="miniV2EditHome">Home</label>' : '<span class="mini-v2-field-label">Home</span>'}
           <div class="mini-v2-inventory-summary-value">
             ${state.editor
-              ? `<select id="miniV2EditHome" class="mini-v2-inventory-home-select" data-edit-field="home">${renderEditOptions("home", state.locations)}</select>`
+              ? `<select id="miniV2EditHome" class="mini-v2-inventory-home-select" data-edit-field="home">${renderEditOptions("home", state.homeLocations)}</select>`
               : renderReadValue(group.home || "Not specified", { marquee: true })}
           </div>
         </div>
@@ -1165,7 +1736,7 @@
 
     function renderReadValue(value, options) {
       const config = options || {};
-      const className = ["mini-v2-read-value", config.extraClass || "", config.marquee ? "mini-v2-marquee-value" : ""]
+      const className = [config.className || "mini-v2-read-value", config.extraClass || "", config.marquee ? "mini-v2-marquee-value" : ""]
         .filter(Boolean)
         .join(" ");
       const safeValue = escapeHtml(value);
@@ -1174,30 +1745,31 @@
         return `<div class="${className}">${safeValue}</div>`;
       }
 
-      return `
-        <div class="${className}" title="${safeValue}">
-          <span class="mini-v2-marquee-track">
-            <span class="mini-v2-marquee-text">${safeValue}</span>
-          </span>
-        </div>
-      `;
+      return `<div class="${className}" title="${safeValue}"><span class="mini-v2-marquee-track"><span class="mini-v2-marquee-text">${safeValue}</span></span></div>`;
     }
 
     function renderCopyRow(copy) {
+      const added = !!state.editor?.addedCopies.includes(copy);
+      const removed = !!state.editor?.removedCopyIds.includes(copy.id);
+      if (removed) return `<tr class="mini-v2-copy-row is-removed" data-detail-copy-id="${escapeHtml(copy.id)}">
+        <td>${escapeHtml(copy.sticker || "--")}</td><td><span class="mini-v2-editor-scope">Removed</span></td>
+        <td><span class="mini-v2-copy-removed-text">Will be removed</span></td>
+        <td><button class="mini-v2-copy-undo" type="button" data-action="undo-remove-copy" data-undo-copy="${escapeHtml(copy.id)}" aria-label="Undo removal of ${escapeHtml(copy.sticker || `copy ${copy.miniNumber}`)}">Undo</button></td></tr>`;
       const displayedCopy = state.editor ? editorCopy(copy) : copy;
       const effectiveLocation = state.editor ? displayedCopy.currentLocation : getEffectiveLocation(copy);
       const away = effectiveLocation !== displayedCopy.home;
-      const dirty = effectiveLocation !== copy.currentLocation || (displayedCopy.note || "") !== (copy.note || "");
+      const dirty = added || effectiveLocation !== copy.currentLocation || (displayedCopy.note || "") !== (copy.note || "")
+        || (displayedCopy.sticker || "") !== (copy.sticker || "");
       const noteValue = displayedCopy.note || "";
       const statusMarkup = dirty
-        ? '<span class="mini-v2-copy-status is-dirty">Unsaved</span>'
+        ? `<span class="mini-v2-copy-status is-dirty">${added ? "New" : "Unsaved"}</span>`
         : away
           ? '<span class="mini-v2-copy-status is-away">Away</span>'
           : '<span class="mini-v2-copy-status is-home">Home</span>';
 
       return `
         <tr class="mini-v2-copy-row ${away ? "is-away" : ""} ${dirty ? "is-dirty" : ""}" data-detail-copy-id="${escapeHtml(copy.id)}">
-          <td>${escapeHtml(copy.sticker || "Needs sticker")}</td>
+          <td>${state.editor ? `<input class="mini-v2-editor-sticker" data-edit-copy-sticker="${escapeHtml(copy.id)}" data-new-copy="${added}" aria-label="Sticker for ${added ? "new " : ""}copy ${copy.miniNumber}" title="${escapeHtml(displayedCopy.sticker || "Sticker not assigned")}" placeholder="--" value="${escapeHtml(displayedCopy.sticker || "")}" autocomplete="off" spellcheck="false">` : escapeHtml(copy.sticker || "Needs sticker")}</td>
           <td>${statusMarkup}</td>
           <td>
             <select class="mini-v2-copy-select" data-copy-id="${escapeHtml(copy.id)}" aria-label="Current location for ${escapeHtml(copy.sticker || `copy ${copy.miniNumber}`)}">
@@ -1205,17 +1777,19 @@
             </select>
           </td>
           <td class="mini-v2-copy-note-cell" title="${escapeHtml(noteValue || "No individual note")}">${state.editor
-            ? `<input class="mini-v2-editor-copy-note" data-edit-copy-note="${escapeHtml(copy.id)}" aria-label="Note for ${escapeHtml(copy.sticker || `copy ${copy.miniNumber}`)}" value="${escapeHtml(noteValue)}" placeholder="Add note...">`
-            : escapeHtml(noteValue || "—")}</td>
+            ? `<div class="mini-v2-copy-note-editor"><input class="mini-v2-editor-copy-note" data-edit-copy-note="${escapeHtml(copy.id)}" aria-label="Note for ${escapeHtml(copy.sticker || `copy ${copy.miniNumber}`)}" value="${escapeHtml(noteValue)}" placeholder="Add note...">
+              <button class="mini-v2-remove-copy" type="button" data-action="remove-copy" data-remove-copy="${escapeHtml(copy.id)}" aria-label="${added ? "Cancel addition of" : "Remove"} ${escapeHtml(copy.sticker || `copy ${copy.miniNumber}`)}" title="${added ? "Cancel this new copy" : "Remove this copy on Save"}"><svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path d="M4 5.5h12M8 3h4l1 2.5M6 5.5l.7 11h6.6l.7-11M8.5 8v5.5M11.5 8v5.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>`
+            : renderReadValue(noteValue || "—", { marquee: true, className: "mini-v2-copy-note-value" })}</td>
         </tr>
       `;
     }
 
     function syncDetailCopyTarget() {
       detailContentNode.querySelectorAll("[data-detail-copy-id]").forEach(row => {
-        if (state.browseMode === "individuals") row.tabIndex = 0;
+        const selectable = state.browseMode === "individuals" && !row.classList.contains("is-removed");
+        if (selectable) row.tabIndex = 0;
         else row.removeAttribute("tabindex");
-        const selected = state.browseMode === "individuals" && !!state.selectedRootId
+        const selected = selectable && !!state.selectedRootId
           && row.dataset.detailCopyId === state.selectedCopyId;
         row.classList.toggle("is-target", selected);
         if (selected) {
@@ -1243,7 +1817,7 @@
                     <th>Note</th>
                   </tr>
                 </thead>
-                <tbody>${group.copies.map(renderCopyRow).join("")}</tbody>
+                <tbody>${editorBaseCopies(group).map(renderCopyRow).join("")}</tbody>
               </table>
             </div>
           </div>
@@ -1252,7 +1826,8 @@
     }
 
     function renderCopyLocationOptions(copy, effectiveLocation) {
-      return [`<option value="__RETURN_HOME__"${effectiveLocation === copy.home ? " selected" : ""}>Return Home</option>`]
+      return [!effectiveLocation ? '<option value="" selected>Choose location</option>' : "",
+        `<option value="__RETURN_HOME__"${effectiveLocation === copy.home && !!copy.home ? " selected" : ""}>Return Home</option>`]
         .concat(Array.from(new Set([...state.locations, effectiveLocation, copy.home])).filter(Boolean).map(location => `
           <option value="${escapeHtml(location)}"${effectiveLocation === location ? " selected" : ""}>${escapeHtml(location)}</option>
         `))
@@ -1260,10 +1835,12 @@
     }
 
     function hasNamedSet(group) {
-      return hasMeaningfulValue(group.set) && String(group.set).trim().toLowerCase() !== "n/a";
+      return hasMeaningfulValue(group.set) && !["n/a", UNSPECIFIED_VALUE.toLowerCase()].includes(String(group.set).trim().toLowerCase());
     }
 
     function getCollectionSummary(group) {
+      if (String(group.set || "").trim().toLowerCase() === UNSPECIFIED_VALUE.toLowerCase()) return UNSPECIFIED_VALUE;
+      if (String(group.set || "").trim().toLowerCase() === "n/a") return "n/a";
       const hasSet = hasNamedSet(group);
       const hasSetNumber = hasMeaningfulValue(group.setNumber);
       if (hasSet && hasSetNumber) return `${group.set} (${group.setNumber})`;
@@ -1311,9 +1888,26 @@
         event.stopPropagation();
         const action = actionButton.getAttribute("data-action");
 
+        if (action === "toggle-summary") { toggleSummaryPanel(actionButton.dataset.summaryPanel); return; }
+        if (action === "collection-view") { openCollectionView(actionButton.dataset.collectionView); return; }
+        if (["review-changes", "review-editor-drafts", "undo-delete-group"].includes(action)) state.summaryPanel = "";
+        if (action === "new-group") { beginNewGroup(); return; }
         if (action === "edit-mini") { beginEditor(); return; }
         if (action === "discard-edit") { discardEditor(); return; }
         if (action === "save-edit") { saveEditor(); return; }
+        if (action === "add-copy") { clearEditorError(); addEditorCopy(); return; }
+        if (action === "apply-next-sticker") { applyNextSticker(); return; }
+        if (action === "remove-copy") { clearEditorError(); removeEditorCopy(actionButton.dataset.removeCopy); return; }
+        if (action === "undo-remove-copy") { clearEditorError(); undoEditorCopyRemoval(actionButton.dataset.undoCopy); return; }
+        if (action === "delete-group" || action === "cancel-delete-group") {
+          const confirmation = detailContentNode.querySelector('.mini-v2-delete-confirm');
+          confirmation.hidden = action !== "delete-group";
+          if (!confirmation.hidden) confirmation.querySelector('[data-action="cancel-delete-group"]').focus();
+          else detailContentNode.querySelector('[data-action="delete-group"]').focus({ preventScroll: true });
+          return;
+        }
+        if (action === "confirm-delete-group") { deleteSelectedGroup(); return; }
+        if (action === "undo-delete-group") { undoGroupDeletion(); return; }
         if (action === "review-editor-drafts") {
           const ids = editorDraftIds();
           if (!ids.length) return;
@@ -1323,12 +1917,14 @@
           state.selectedRootId = next;
           renderAllPreservingScroll(null, { keepSelection: true });
           document.getElementById("miniV2EditName").focus({ preventScroll: true });
+          revealDetailOnSmallScreen();
           return;
         }
         if (action === "edit-all-home" && state.editor) {
-          getSelectedGroup().copies.forEach(copy => {
+          retainedEditorCopies().forEach(copy => {
             const home = editorCopy(copy).home;
             state.editor.copies[copy.id].currentLocation = home;
+            if (state.editor.addedCopies.includes(copy)) state.editor.copies[copy.id].followsHome = true;
             const select = Array.from(detailContentNode.querySelectorAll("select[data-copy-id]"))
               .find(node => node.dataset.copyId === copy.id);
             select.innerHTML = renderCopyLocationOptions(editorCopy(copy), home);
@@ -1358,11 +1954,14 @@
             state.search = "";
             state.locationFilter = "all";
             state.filtersApplied = createEmptyFilterState();
+            state.collectionView = "";
+            state.previousBrowse = null;
           }
           state.selectedRootId = group.rootId;
           state.selectedCopyId = state.browseMode === "individuals" ? dirtyCopy.id : "";
           renderAllPreservingScroll(null, { keepSelection: true });
           if (state.selectedCopyId) scheduleCopyReveal(state.selectedCopyId);
+          revealDetailOnSmallScreen();
           return;
         }
 
@@ -1371,12 +1970,6 @@
             actionButton.getAttribute("data-facet-kind") || "",
             actionButton.getAttribute("data-facet-value") || ""
           );
-          renderAllPreservingScroll();
-          return;
-        }
-
-        if (action === "toggle-facet-flag") {
-          toggleAppliedFacetFlag(actionButton.getAttribute("data-facet-flag") || "");
           renderAllPreservingScroll();
           return;
         }
@@ -1419,6 +2012,7 @@
         }
 
         if (action === "clear-filters") {
+          if (state.previousBrowse) { restorePreviousBrowse(); return; }
           state.search = "";
           state.locationFilter = "all";
           state.locationMenuSearch = "";
@@ -1481,6 +2075,7 @@
           state.selectedCopyId = copyId;
           renderAllPreservingScroll();
           if (copyId) scheduleCopyReveal(copyId);
+          revealDetailOnSmallScreen();
           return;
         }
         clearSelectedGroup();
@@ -1505,17 +2100,24 @@
 
     function handleRootChange(event) {
       if (updateEditorInput(event.target)) return;
+      if (event.target instanceof HTMLSelectElement && event.target.hasAttribute("data-filter-set")) {
+        state.filtersApplied.set = event.target.value;
+        renderAllPreservingScroll();
+        return;
+      }
       const copySelect = event.target.closest("select[data-copy-id]");
       if (copySelect) {
         const group = getSelectedGroup();
         if (!group) return;
-        const copy = group.copies.find(item => item.id === copySelect.getAttribute("data-copy-id"));
+        const copy = editorBaseCopies(group).find(item => item.id === copySelect.getAttribute("data-copy-id"));
         if (!copy) return;
 
         const nextLocation = copySelect.value === "__RETURN_HOME__" ? (state.editor ? editorCopy(copy).home : copy.home) : copySelect.value;
         if (state.editor) {
           state.editor.copies[copy.id].currentLocation = nextLocation;
+          if (state.editor.addedCopies.includes(copy)) state.editor.copies[copy.id].followsHome = false;
           copySelect.innerHTML = renderCopyLocationOptions(editorCopy(copy), nextLocation);
+          clearEditorError();
           syncEditorFeedback();
           return;
         }
@@ -1529,7 +2131,27 @@
     }
 
     function handleRootKeydown(event) {
+      if (event.key === "Escape" && state.summaryPanel) {
+        event.preventDefault();
+        const panel = state.summaryPanel;
+        state.summaryPanel = "";
+        renderSummaryLane();
+        focusSummaryTrigger(panel);
+        return;
+      }
+      const summaryTrigger = event.target.closest('[data-action="toggle-summary"]');
+      if (summaryTrigger && event.key === "ArrowDown") {
+        event.preventDefault();
+        state.summaryPanel = summaryTrigger.dataset.summaryPanel;
+        renderSummaryLane();
+        const panel = document.getElementById(summaryTrigger.getAttribute("aria-controls"));
+        const first = panel?.querySelector("button:not(:disabled)");
+        if (first) first.focus({ preventScroll: true });
+        else focusSummaryTrigger(state.summaryPanel);
+        return;
+      }
       if (event.key === "Escape" && state.openFacetKey) {
+        if (event.target instanceof HTMLSelectElement) return;
         const currentFacetKey = state.openFacetKey;
         state.openFacetKey = "";
         renderFacetBar();
@@ -1555,6 +2177,12 @@
         // Escape on a native select belongs to its popup, not to the whole editor.
         if (event.target instanceof HTMLSelectElement) return;
         event.preventDefault();
+        const confirmation = detailContentNode.querySelector('.mini-v2-delete-confirm');
+        if (confirmation && !confirmation.hidden) {
+          confirmation.hidden = true;
+          detailContentNode.querySelector('[data-action="delete-group"]').focus({ preventScroll: true });
+          return;
+        }
         clearSelectedGroup();
         return;
       }
@@ -1588,6 +2216,12 @@
 
     function dismissOutsidePopovers(target) {
       let dismissed = false;
+      if (state.summaryPanel && target instanceof Element
+        && !target.closest(".mini-v2-summary-popover, .mini-v2-top-card button")) {
+        dismissed = true;
+        state.summaryPanel = "";
+        renderSummaryLane();
+      }
       if (state.locationMenuOpen && target instanceof Element && !target.closest("#miniV2LocationCombobox")) {
         dismissed = true;
         state.locationMenuOpen = false;
@@ -1630,6 +2264,7 @@
       if (!target || !(target instanceof Element)) return false;
       if (target.closest("#miniV2DetailPanel")) return true;
       if (target.closest("#miniV2FacetShell")) return true;
+      if (target.closest(".mini-v2-summary-popover")) return true;
       if (target.closest("tr[data-group-id]")) return true;
       if (target.closest(".mini-v2-top-card :is(button, input, select, textarea, a, label, [data-action])")) return true;
       if (target.closest(".mini-v2-controls :is(button, input, select, textarea, a, label, [data-action])")) return true;
@@ -1645,6 +2280,8 @@
         tableTop: tableScrollNode ? tableScrollNode.scrollTop : null,
         tableLeft: tableScrollNode?.querySelector(".mini-v2-list-wrap")?.scrollLeft || 0,
         detailTop: detailScrollNode ? detailScrollNode.scrollTop : null,
+        facetKey: state.openFacetKey,
+        facetTop: facetPopoverBodyNode ? facetPopoverBodyNode.scrollTop : 0,
         detailTableLeft: detailContentNode?.querySelector(".mini-v2-copy-table-shell")?.scrollLeft || 0
       };
     }
@@ -1672,6 +2309,9 @@
         if (detailScrollNode && scrollState.detailTop !== null) {
           detailScrollNode.scrollTop = scrollState.detailTop;
         }
+        if (facetPopoverBodyNode && state.openFacetKey === scrollState.facetKey) {
+          facetPopoverBodyNode.scrollTop = scrollState.facetTop || 0;
+        }
         const listWrap = tableScrollNode?.querySelector(".mini-v2-list-wrap");
         if (listWrap) listWrap.scrollLeft = scrollState.tableLeft || 0;
         const copyShell = detailContentNode?.querySelector(".mini-v2-copy-table-shell");
@@ -1683,7 +2323,7 @@
     }
 
     function browseScrollKey() {
-      return JSON.stringify([state.search, state.locationFilter, state.filtersApplied, state.sort]);
+      return JSON.stringify([state.collectionView, state.search, state.locationFilter, state.filtersApplied, state.sort]);
     }
 
     function switchBrowseMode(mode) {
@@ -1712,7 +2352,7 @@
     }
 
     function selectDetailCopy(copyId) {
-      if (!getSelectedGroup()?.copies.some(copy => copy.id === copyId)) return;
+      if (!getSelectedGroup() || !retainedEditorCopies().some(copy => copy.id === copyId)) return;
       clearTimeout(copyRevealTimer);
       state.selectedCopyId = copyId;
       renderAllPreservingScroll(null, { keepSelection: true, keepDetail: true });
@@ -1749,7 +2389,15 @@
     }
 
     function getPrimaryScrollHost() {
+      if (!desktopMq.matches) return document.body;
       return document.scrollingElement || document.documentElement || document.body;
+    }
+
+    function revealDetailOnSmallScreen() {
+      if (desktopMq.matches || !getSelectedGroup()) return;
+      requestAnimationFrame(() => {
+        if (!desktopMq.matches && getSelectedGroup()) detailPanelNode.scrollIntoView({ block: "start", behavior: "instant" });
+      });
     }
 
     function syncDesktopLayoutMetrics() {
@@ -1822,7 +2470,7 @@
         const overflowAmount = Math.ceil(textNode.scrollWidth - node.clientWidth);
         if (overflowAmount <= 1) return;
 
-        const moveSeconds = Math.max(4, Math.min(10, overflowAmount / 22));
+        const moveSeconds = Math.max(4, overflowAmount / 22);
         const totalSeconds = moveSeconds + 4;
         const startPauseOffset = 2 / totalSeconds;
         const endPauseOffset = (2 + moveSeconds) / totalSeconds;
@@ -1848,6 +2496,7 @@
       const filterState = filterStateOverride || state.filtersApplied;
 
       const filteredGroups = state.groups.filter(group => {
+        if (!group.copies.some(matchesCollectionView)) return false;
         if (search && !group.searchText.includes(search)) return false;
 
         if (state.locationFilter !== "all") {
@@ -1872,8 +2521,12 @@
       if (filterState.roles.length && !filterState.roles.includes(group.role || "n/a")) return false;
       if (filterState.sexes.length && !filterState.sexes.includes(group.sex || "n/a")) return false;
       if (filterState.races.length && !filterState.races.includes(group.race || "n/a")) return false;
-      if (filterState.paintedOnly && !group.paint) return false;
-      if (filterState.needsStickersOnly && (copy ? !!copy.sticker : !group.needsStickers)) return false;
+      if (filterState.paints.length && !filterState.paints.includes(getPaintValue(group.paint))) return false;
+      if (filterState.set && group.set !== filterState.set) return false;
+      if (filterState.stickers.length) {
+        const copies = copy ? [copy] : group.copies;
+        if (!copies.some(item => filterState.stickers.includes(getStickerStatus(item.sticker)))) return false;
+      }
       return true;
     }
 
@@ -1883,6 +2536,7 @@
       const rows = [];
       state.groups.forEach(group => {
         group.copies.forEach((copy, copyOrder) => {
+          if (!matchesCollectionView(copy)) return;
           if (!matchesStructuredFilters(group, state.filtersApplied, copy)) return;
           if (state.locationFilter !== "all" && copy.currentLocation !== state.locationFilter) return;
           const searchText = [group.sharedSearchText, copy.id, copy.sticker, copy.currentLocation, copy.note || ""].join(" ").toLowerCase();
@@ -1923,8 +2577,9 @@
         roles: [],
         sexes: [],
         races: [],
-        paintedOnly: false,
-        needsStickersOnly: false
+        paints: [],
+        set: "",
+        stickers: []
       };
     }
 
@@ -2025,7 +2680,7 @@
     }
 
     function getSelectedGroup() {
-      return state.groups.find(group => group.rootId === state.selectedRootId) || null;
+      return state.groups.find(group => group.rootId === state.selectedRootId) || state.newGroups[state.selectedRootId] || null;
     }
 
     function ensureSelectionVisibility(rows) {
@@ -2106,10 +2761,9 @@
         { label: "Sex", value: group.sex },
         { label: "Race", value: group.race },
         { label: "Role", value: group.role },
-        { label: "Paint", value: typeof group.paint === "boolean" ? String(group.paint) : "" },
+        { label: "Paint", value: getPaintValue(group.paint) },
         { label: "Set", value: group.set },
-        ...(hasNamedSet(group) ? [{ label: "Set #", value: group.setNumber }] : []),
-        { label: "Notes", value: group.notes }
+        ...(hasNamedSet(group) ? [{ label: "Set #", value: group.setNumber }] : [])
       ];
 
       return candidates

@@ -1,10 +1,121 @@
 # Shared Editing: UX Options
 
-Prepared September 9, 2026 against `aff153d`; updated October 4 while revisiting
-the owner's editor feedback. The original options remain discussion history.
-Stay mock-only: no spreadsheet connection, persistence, creation, or sticker work.
+Prepared September 9, 2026 against `aff153d`; updated October 5 for the creation
+and copy-management prototype. The original options remain discussion history.
+Stay mock-only: creation, edits, and deletion use browser memory; no spreadsheet
+connection or collection persistence. Only the next-sticker counter preference
+is remembered in browser-local storage, as requested on October 6.
 
-## Current Editor Prototype: October Refinements
+## Pre-Live Fix Pass: October 6
+
+This approved pass supersedes earlier prototype limitations below. It does not
+connect a spreadsheet or persist miniature records.
+
+- Every copy ID is editable in the existing narrow ID cell. Changed IDs validate
+  case-insensitively against unchanged siblings, saved records, parked drafts,
+  and undoable deletions. Blank and explicit n/a remain allowed; unchanged legacy
+  duplicates do not block unrelated corrections. Swapping two IDs within one
+  group is supported. Internal copy IDs stay stable.
+- Apply-ID targets the first blank retained copy in table order, including an
+  existing blank. It skips n/a and does not follow selection, overwrite IDs, or
+  append copies. The original saved ID remains reserved until Save applies a
+  correction. Deletion Undo reserves saved IDs and unapplied corrections.
+- Sequence preferences are draft-local until their editor saves. Discard/removal
+  cannot leave the global cursor stranded at Z99. Other parked drafts may guide
+  suggestions, but an unrelated metadata Save cannot persist their preference.
+  The future authoritative catalog-minus-assignments TODO remains separate.
+- A new group with zero copies remains a retained creation draft, not a blank
+  existing group. It cannot publish until valid. Discard removes it completely.
+- Set # accepts up to three alphanumeric characters beginning with a digit,
+  including 4a and 5b. Without a named Set, the control is disabled and visually
+  empty. Toggling back before Save restores the draft number; saving clears the
+  inapplicable number. Untouched legacy values are preserved for named sets.
+- A valid Paint cannot be cleared. Untouched legacy missing paint remains
+  tolerated during unrelated edits. Empty Notes never lower Ready status.
+- Small-screen selection, New, and draft recovery reveal the inspector header;
+  subsequent typing does not jump the page. Desktop geometry remains unchanged.
+
+See [the current handoff](recalibration-2026-09.md) for verification and live-data
+gates. Earlier dated sections preserve the design history, not current limitations.
+
+## More Filter Cleanup: October 6
+
+The owner requested a cleanup of More, particularly dated Paint terminology and
+missing paint statuses, and questioned whether dozens of long set names or a
+scrollbar could fit cleanly. This prototype awaits development-site feedback.
+
+- Following owner feedback, More follows the card's reading order: Role, Set, Paint status, Stickers. Paint uses a single three-column row at normal popover width, labelled Painted, Unpainted, In Progress. The last label retains Work in Progress as its actual value, tooltip, and accessible name; the editor's terminology/data are unchanged. Narrow panes retain the existing readable fewer-column fallback instead of widening the popover or clipping labels. Selecting several paint statuses matches any selected status; Role, Set, sticker, search, and location criteria combine with AND. Unsupported/missing legacy paint is included when no paint criterion is selected, never misclassified as a valid status.
+- Set uses one full-width native dropdown with All sets as the default, not a tile for every set or three narrow columns of long names. Its 13px/600-weight typography now matches the facet tile labels. This first version filters one set at a time; the selected full name is also available through its title. The native option menu handles its own scrolling and keyboard type-ahead. Choices come from the mock catalog and saved collection, not filtered results or unpublished drafts. Keep catalog choices available even after the last group using one changes set.
+- Stickers has a heading and two multi-select values, Assigned and Missing, replacing Needs stickers only. Following owner feedback, these use the same three-column tracks as Role/Paint at normal width, leaving the third slot empty instead of stretching each choice to half the row; the shared narrow-pane fallback remains. Missing means a blank/whitespace-only ID. Assigned means a recorded nonblank value, including explicit n/a for now; this preserves the resolved-versus-missing distinction without introducing the deferred third-state UX. Groups match if any copy has a selected state, so a mixed group can appear under either filter. Individuals match the particular copy. Selecting both matches either state, and no selection imposes no sticker criterion. Tooltips explain the current n/a and mixed-group treatment.
+- Role and the other descriptive facets now include explicit Not specified and unfamiliar saved choices, preserving the existing canonical order. Not specified is not a synonym for unanswered blank data and is not a fourth Paint status.
+- More's active count and Clear include Role, every selected paint status, Set, and every selected sticker state. Its Clear preserves the other facets/search/location; global Clear resets everything. Set and sticker selection retain keyboard focus, and scrolling within More is preserved across filter updates. Escape on the native Set control is left to its option menu instead of dismissing the containing popover/editor.
+- Filter buttons now separate their label and count bubble with a 6px gap. The count remains centered with equal outer padding on either side of the whole label/badge pair, and button/badge heights remain 30px/18px. Only filter bars at most 320px wide use 9px rather than 11px symmetric button padding, keeping the owner's Type 5 / Sex 2 example on its existing row at 360px viewport width. A regression covers single-/double-digit counts and desktop/mobile spacing; three focused count/focus/More-layout checks passed with no browser script errors.
+- More keeps the same outer width as the other popovers. An overflowing thin scrollbar uses existing right padding instead of narrowing or misaligning the content; both overlay and layout-space-consuming scrollbars are covered. Role/Paint grids use fewer columns only in narrow More popovers to preserve readable paint labels. Other facet layouts and editor dropdown styling remain unchanged.
+- Height is capped by the existing 460px/72vh limit and the visible workspace. On short windows, More opens above the facet row if the space below is too cramped and the space above is better. Its header remains outside the scrolling body; Set names never increase the popover's height by being listed as tiles.
+- The earlier broad 57-scenario run passed, followed by six affected rechecks for short-window/layout refinements. Two further scenarios cover the requested order/typography/single paint row and Assigned/Missing copy/group semantics, bringing the suite to 59 scenarios. Ten focused scenarios passed after these latest refinements, with no browser script errors; desktop/mobile screenshots were reviewed. Geometry checks include 1440, 1100, 980, 390, and 360px, a short 560px window, 65 extra long sets/roles, and a scrollbar forced to reserve real layout space.
+- Dropdown catalogs can be managed in the spreadsheet later; an in-app administrative list editor is not required. Optional future filter gaps include availability/Home-versus-Away and more precise missing-data filtering; do not add controls for every field without a use case. Existing-ID editing, the top header labels, and end-to-end review remain separate next slices. No spreadsheet connection or persistence was added.
+
+## Current Creation And Copy-Management Prototype: October 5
+
+The owner approved reusing the sidebar editor and asked to implement the plan.
+This prototype is ready for interaction and visual feedback, not final acceptance.
+
+- A separate `+ New` button beside the Groups/Individuals switch opens creation from either mode. The header keeps its height and the toggle's 16px title gap. On a narrow browse pane the action becomes `+`, and the heading shortens to Browse when necessary; this responds to pane width, including desktop compression.
+- Creation starts with blank character/set/name/Home/Paint fields and one provisional copy. The existing Details, Miniature, Inventory, and Notes order is preserved. Create Group is the explicit publication boundary; the draft and its copies do not appear in browse results before creation.
+- Creation requires a name, Home, at least one retained copy, and deliberate selections for Size, Creature Type, Race, Sex, Role, Set, and Paint. Each added copy needs a current location. Set # is required for a named set and retains its three-digit validation; `n/a` and explicit Not specified do not require a number. Notes may be blank. Editing an existing incomplete group remains possible without filling unrelated omissions.
+- Dropdowns start visibly blank, not labelled Not specified. Blank means unanswered and blocks creation for these required choices. Not specified is a separate, saved option for descriptive metadata except Paint; `n/a` remains a deliberate selection where applicable. Home still requires a location, not an unspecified choice. Draft recovery preserves these distinct states, and the missing-field badge does not treat explicit Not specified as an unanswered descriptive field.
+- Create Group stays dimmed/disabled until those requirements and sticker/Set # checks pass. Its state updates with edits, copy additions/removals, and draft recovery; its tooltip explains the first blocker. The button and Save action share validation, so bypassing the disabled control cannot publish an invalid draft. Existing-group Save Changes retains its current behavior.
+- Close/navigation retains the new draft, and Discard removes it and returns to the prior selection when available. `+ New` reopens an existing unfinished new group instead of producing repeated empty drafts; the global Drafts action also recovers it through filters. Existing editor/location drafts remain separate.
+- `+ Add new copy` appends one provisional row per click in creation or editing. It starts at Home and follows Home changes until its location is explicitly edited. Existing copies retain their current locations when Home changes. Set All Home explicitly moves all retained draft copies.
+- Only newly added copies get compact sticker inputs within the existing 44px ID column. Blank IDs are allowed, text is trimmed on Save, and assigned stickers are checked case-insensitively against other active copies, siblings, and recoverable deleted groups. Literal `n/a` is exempt from duplicate-code checks. Existing sticker corrections and an explicit Cannot take a sticker choice remain later work; long IDs may need the proposed popover/modal.
+- Copy remove buttons share the Note cell with its input, reserving the same small space in each editable row. All four column widths, Home alignment, and scrollbar placement remain intact. Newly appended rows can be cancelled immediately; existing rows show Will be removed and Undo until Save. Counts preview retained rows, while browse counts wait for Save. Stable copy identities are never renumbered or reused.
+- Removing the last existing copy points to Delete group rather than silently deleting the group. A draft with no retained copies cannot be saved. Discard restores copy additions/removals and preserves location staging that existed before Edit.
+- Delete group is a quiet footer action on existing groups. It opens an inline confirmation naming the saved group and copy count; Cancel/Escape dismisses that confirmation without closing the editor. Confirming removes the saved group and all its copies from both browse modes. Undo deletion restores the most recent deleted group, stable identities, prior location staging, and its unapplied editor draft. Its stickers stay reserved while Undo is available.
+- A matching existing name produces an informational suggestion to edit that group and add copies; it does not silently merge distinct groups. Filters are preserved on creation, and the inspector explains when its saved entry falls outside current browse results.
+- Paint is a standard dropdown beside Set with exactly three status choices, ordered Painted, Unpainted, Work in Progress. The owner explicitly rejected Not specified for Paint. New groups start blank and need one of those three choices before creation; the save guard also rejects unsupported nonblank statuses. Legacy booleans still display correctly. Missing/unsupported legacy values appear as a dash and remain flagged missing, rather than being labelled Unpainted or offered as extra statuses. Unrelated edits preserve the original stored paint value. Painted only matches Painted explicitly, never other nonblank status strings.
+- Long per-copy and group Notes reuse the read-mode marquee: clip without wrapping or ellipsis, pause two seconds, scroll slowly, pause two seconds, and reset to the start rather than reversing. Only overflowing text moves. Travel has no ten-second cap, preserving slow speed for long notes. Original fonts, margins, card/row heights, text, and tooltips remain intact. Reduced-motion preference disables animation; editable notes remain ordinary input/textarea controls.
+
+Review targets: the compact ID input, remove controls beside notes, placement
+of Add new copy, draft recovery, and the inline deletion/Undo flow. The blank
+versus `n/a` sticker TODO stays in the later sticker UX work. Header label cleanup
+remains the separate Header System Pass. No Git/clasp upload was requested for
+this prototype.
+
+Validation: all 42 Chrome regression scenarios passed in a full run after the
+Paint dropdown and Notes marquee refinements, with no browser script errors.
+Coverage includes live enable/disable updates, the Save guard, each required
+choice, conditional Set #, and draft/save/reopen round trips. Paint checks cover
+legacy booleans, option order, Work in Progress, and Painted only in both browse
+modes. Note checks cover exact text, fonts/margins/heights, both pauses, slow
+travel, reset, reduced motion, and static edit controls. Existing-group editing
+and desktop/mobile geometry also pass. Desktop/mobile screenshots were reviewed,
+including the dropdown and both note marquees.
+Tests verify unchanged column widths, remove controls contained in Note, and
+space for a common three-character sticker code. `TEST_FILTER` can select
+scenarios by name for focused local rechecks; it must match at least one.
+After removing Not specified from Paint, eight affected editor, paint-filter,
+creation, and blank-choice scenarios passed again. Notes marquee behavior was
+unchanged.
+
+## October 6 Feedback And Sticker Convenience Proposal
+
+The owner considers the authoring flow good and manual sticker entry adequate,
+but would like a fast way to use the next unassigned sticker in a sequence such
+as D91, D92. After accepting the direction, the owner clarified that the shortcut
+was ready for implementation. It is now implemented for mock-only UX review.
+
+- After comparing the original appearance, the owner accepted Option 3: the original two-pixel blue outward outline with `outline-offset: 1px`, plus a compensated three-pixel left scroll gutter (`padding-left: 3px; margin-left: -3px`). This is restored. The clipping boundary expands without moving or resizing fields, headers, or table columns. The inset (-2px) option is not used. Fonts, dropdown arrows, and native option menus are unchanged. Preserve this accepted treatment rather than repeating the original/inset comparison; Paint's separately requested dropdown and other authoring/sticker work remain untouched.
+- The last full run passed all 52 Chrome regression scenarios after the automatic-start/counter-memory correction, with no browser script errors; nine affected shortcut scenarios also passed separately. After restoring accepted Option 3, four focused focus/layout/copy-control scenarios passed with no browser script errors. Focus coverage includes existing/new flows at 1440, 1100, 980, and 390px: the compensated gutter preserves the original control geometry and gives outward rings clearance. Desktop/mobile screenshots were also reviewed. Shortcut layout checks include 360px, keeping headers, columns, editor height, and relative button positions stable when the label changes. Existing storage checks exercise automatic discovery, empty collections, counter-only reload persistence, malformed/stale stored IDs, and blocked embedded-browser storage.
+- `+ Add new copy` and `Apply B92` (showing the actual next proposed ID) sit together, with Set All Home on the right. The Apply button reserves a stable 100px width; narrow action rows can wrap without squeezing table columns. No new table column, wider ID cell, or modal was added. Manual entry remains available.
+- Each click fills the first blank new-copy sticker field from top to bottom. If rows 2 and 3 are blank, the first click fills row 2 and the second fills row 3. It never appends a copy or overwrites an ID. Neither input focus nor the blue individual-selection highlight changes the target; only Add new copy appends rows. Existing-copy IDs remain read-only, including existing missing stickers.
+- The owner rejected requiring a manually entered first sticker. The shortcut is now ready on entry: load a valid remembered next ID, otherwise scan the collection's highest valid letter-plus-two-digit ID and continue after it, or start at A00 if none exists. This fallback does not backfill historical holes below the latest sticker. Current mock data ends at M07, so a blank new-copy row immediately offers Apply M08. Saved preferences take precedence but assigned/reserved codes are still skipped. Manual entry remains optional and can choose another sequence; it is never required to enable the shortcut. Without a blank new-copy row, or when exhausted through Z99, the action is disabled with an explanatory tooltip.
+- Save remembers the next available applied-sequence ID in browser-local storage, separately namespaced for mock and collection mode. Only that small preference survives reload: no miniature data or drafts are persisted, and no spreadsheet call is made. Merely suggesting/applying a draft ID does not advance the stored counter; parked drafts are excluded when saving the preference, so reload does not burn their uncommitted IDs. Invalid storage values fall back to collection scanning; a blocked local-storage API does not prevent using the in-memory counter. Collection-wide/server-side persistence remains future integration work, not part of this mock UX change.
+- Data-storage TODO accepted by the owner: replace the browser-counter source of truth with the legacy-style difference between the full ordered sticker catalog and stored assignments, excluding temporary draft reservations. Apply-ID and any future sticker picker should share this availability list, including earlier unused IDs. Load the catalog and assignments together, update availability locally during edits, and revalidate uniqueness on durable Save; do not make a server request per button click. Availability must be reconstructible across sessions/devices from stored data; a remembered cursor may be a preference only. Leave the current mock shortcut in place until the data-storage phase; this feedback does not authorize spreadsheet integration now.
+- The owner uses A00 through A99, then B00 through B99, continuing by letter and preserving two digits: A99 advances to B00, never A100. Suggested IDs use uppercase letters; manually entered casing is preserved. The action skips saved IDs and reservations in the active draft, parked drafts, and undoable deleted groups (including their unapplied additions), case-insensitively. Save validation also checks other drafts to prevent manual cross-draft duplicates. Merely displaying a suggestion does not consume it; adding it reserves it in that draft, while removal/Discard releases the reservation. Only Save applies assignments in mock memory.
+- Beyond Z99 is deferred because it is not a near-term concern. The current shortcut stops and disables itself with an explanation rather than inventing an ordering after Z99. Literal n/a does not select a different sequence or consume a numbered ID. No native prompt or mandatory bootstrap step was introduced.
+- Other remaining UX slices: correct/reassign existing stickers and explicitly distinguish missing from Cannot take a sticker; maintain the option catalogs used by Set/Home and other dropdowns; review the passive top labels and wrapping. The owner's permission to remember this counter locally does not authorize real-sheet integration or collection persistence.
+
+## Editor Baseline: October 4 Refinements
 
 The user prioritized cleanliness first and familiar order second, then asked
 for a working prototype. This is an initial UX slice, not a completed edit phase.
@@ -54,6 +165,7 @@ copies, editing sticker IDs, and creation remain outside this feedback pass.
 - New miniature groups may reuse this editor. Keep a provisional entry distinct from a real collection entry; explicit Save should be the candidate creation boundary, not clicking outside or opening another miniature. This is design groundwork, not authorization to implement creation now.
 - Adding physical copies to an existing group may use staged rows in this table. Decide how users add/remove provisional rows and review quantity before applying; do not silently change totals while merely drafting.
 - Correcting an individual sticker ID may belong near its row, but the narrow ID column and future validation/assignment workflow need a separate design conversation. Preserve stable copy identity if a displayed sticker changes; do not widen the table or add ID inputs in this iteration.
+- October 5 sticker follow-up: creation may allow a blank ID, but blank means an assignment is missing and may warrant a warning. Explicit `n/a` means a sticker cannot be used (for example, the miniature is too small) and must not be treated as missing. Design an explicit choice for this state, potentially in a sticker-entry popover or modal, instead of depending on the user remembering to type `n/a`. This remains a later sticker UX task; see the roadmap's Post-UI TODOs.
 - A controlled catalog for sets and other dropdown values needs a maintenance flow analogous to the legacy datalists tab. Do not treat free typing in the miniature's Set field as a substitute for that flow.
 - Adding groups/copies, sticker corrections, and catalog maintenance remain deferred until strategies are discussed. No real-sheet integration is a prerequisite for these UX experiments.
 

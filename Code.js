@@ -1,6 +1,11 @@
 function doGet() {
   var template = HtmlService.createTemplateFromFile("Index");
-  template.initialStateJson = serializeInitialState_(buildMockAppState_());
+  try {
+    template.initialStateJson = serializeInitialState_(buildSpreadsheetPreviewState_());
+  } catch (error) {
+    console.error("Preview load failed: " + error.message);
+    template.initialStateJson = serializeInitialState_({ loadError: true });
+  }
 
   return template
     .evaluate()

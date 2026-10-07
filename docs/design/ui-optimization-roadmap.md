@@ -775,6 +775,19 @@ Why last:
 
 ### 14. Header System Pass
 
+October 6 prototype: the passive label row has been replaced by a compact
+collection summary, reversible Away/Missing-sticker browse shortcuts, and a
+Review Changes disclosure retaining draft, pending-location, and undo recovery.
+The prototype warning is in the title row; narrow layouts use a Collection
+disclosure instead of wrapping. The owner accepted this initial pass for now.
+
+Future Dashboard TODO: a disabled Dashboard / Soon affordance now sits beside
+the collection totals (inside Collection on narrow screens). Eventually explore
+race/type counts, collection composition charts, and set-completion percentages.
+Keep physical-copy counts distinct from unique miniature entries; completion
+requires a catalog of all entries in each set. No dashboard implementation or
+real data integration is authorized by this placeholder.
+
 Deliverables:
 
 - revisit the app header, browse header, and detail header together as one visual system
@@ -845,5 +858,14 @@ Most importantly:
 
 ## Post-UI TODOs
 
+- October 6: the planned pre-live interaction review has been performed. The approved mock-only fix pass addresses empty new-group recovery, existing-ID editing, draft sequence leakage, Set-number suffixes/n/a, Paint/Notes validation, and narrow-screen inspector reveal. See the current handoff for verification; do not repeat these as unimplemented UI gaps.
+- before durable writes: decide web-app authorization and deployment access. The current manifest is ANYONE_ANONYMOUS running as USER_DEPLOYING; it must not acquire unrestricted owner-authorized write endpoints by accident.
+- plan the import/schema separately, retain a source backup, and dry-run counts, identities, locations, Set-number suffixes, and blank/n/a stickers before touching live data.
+- data-storage phase: derive authoritative available sticker IDs from the full ordered catalog minus stored assignments and temporary draft reservations, matching the owner's legacy two-column difference; share the result between Apply-ID and a future sticker picker, including earlier unused gaps
+- rebuild sticker availability across sessions/devices from stored collection data, not a browser counter; a remembered next-position preference may guide ordering but is not the source of truth
+- load the sticker catalog and assignments together, update availability locally while editing, and revalidate uniqueness on durable Save without a server request per Apply click; leave the current mock shortcut unchanged until that phase
 - define and implement the distinction between an unassigned sticker and an `n/a` sticker
+- blank means a sticker assignment is missing and should be eligible for a warning or Needs stickers workflow; explicit `n/a` means the copy cannot take a sticker (for example, it is too small) and should not be flagged as missing
 - make sure that distinction is handled consistently in data, filtering, display, and future edit flows
+- design an explicit way to mark a copy as unable to take a sticker, rather than relying only on remembering to type `n/a`; consider a sticker-entry popover or modal if the narrow ID cell cannot communicate this choice clearly
+- allowing a blank sticker when creating a copy does not mean treating it as complete; resolve the warning behavior during the later sticker UX pass

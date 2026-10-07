@@ -11,7 +11,7 @@ vm.runInContext(read('Code.js'), server);
 
 function makeHtml(data = server.buildMockAppState_()) {
   let template;
-  server.buildMockAppState_ = () => data;
+  server.buildSpreadsheetPreviewState_ = () => data;
   server.HtmlService = {
     XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' },
     createTemplateFromFile() {
@@ -53,14 +53,154 @@ const firstCopy = '013-ZHESOL-01';
     };
     const select = id => page.locator(`select[data-copy-id="${id}"]`);
     const action = name => page.locator(`[data-action="${name}"]`);
+    const review = async name => {
+      if (!await action(name).isVisible()) await page.locator('[data-summary-panel="changes"]').click();
+      await action(name).click();
+    };
     const tableWidth = () => page.locator('.mini-v2-browse-table').evaluate(node => node.getBoundingClientRect().width);
-    const check = async (name, test) => { await test(); console.log(`PASS ${name}`); };
+    const testFilter = process.env.TEST_FILTER ? new RegExp(process.env.TEST_FILTER) : null;
+    let checksRun = 0;
+    const check = async (name, test) => {
+      if (testFilter && !testFilter.test(name)) return;
+      await test();
+      checksRun++;
+      console.log(`PASS ${name}`);
+    };
     const mode = value => page.locator(`[data-browse-mode="${value}"]`).click();
     const browseCopies = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(rows => rows.map(row => row.dataset.copyId));
     const location = async value => {
       await action('toggle-location-menu').click();
       await page.locator(`[data-location-value="${value}"]`).click();
     };
+    const fillNewDetails = async (values = {}, targetPage = page) => {
+      for (const [key, value] of Object.entries({ size: 'Medium', creatureType: 'Humanoid', race: 'Human',
+        sex: 'Male', role: 'Melee', set: 'n/a', paint: 'Painted', ...values })) {
+        await targetPage.locator(`[data-edit-field="${key}"]`).selectOption(value);
+      }
+    };
+
+    await check('collection banner stays one row with stable height, accessible recovery and a future dashboard', async () => {
+      for (const width of [1440, 1100, 980, 820, 819, 600, 390, 360, 320]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        const banner = page.locator('.mini-v2-top-card');
+        const geometry = () => banner.evaluate(node => ({ height: node.getBoundingClientRect().height,
+          workspaceOffset: document.querySelector('.mini-v2-workspace').getBoundingClientRect().top - node.getBoundingClientRect().top }));
+        const initial = await geometry();
+        assert.match(await page.locator('.mini-v2-collection-total').textContent(), /28.*9/s);
+        assert.equal(await page.locator('.mini-v2-dashboard:not(:disabled)').count(), 0);
+        assert.ok(await banner.evaluate(node => {
+          const bounds = node.getBoundingClientRect();
+          return [...node.querySelectorAll('button')].filter(button => button.getClientRects().length).every(button => {
+            const box = button.getBoundingClientRect();
+            return box.left >= bounds.left && box.right <= bounds.right && button.scrollWidth <= button.clientWidth;
+          });
+        }), `banner controls fit at ${width}`);
+        if (process.env.SCREENSHOT_PATH && [1440, 390].includes(width)) {
+          await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-banner-${width}.png`) });
+        }
+        await page.locator('[data-summary-panel="changes"]').click();
+        assert.equal(await page.locator('#miniV2ChangesMenu').isVisible(), true);
+        assert.match(await page.locator('#miniV2ChangesMenu').innerText(), /No pending edits/);
+        assert.deepEqual(await geometry(), initial);
+        await page.keyboard.press('Escape');
+        assert.equal(await page.locator('#miniV2ChangesMenu').isVisible(), false);
+        assert.equal(await page.evaluate(() => document.activeElement.dataset.summaryPanel), 'changes');
+        if (width < 820) {
+          await page.locator('[data-summary-panel="collection"]').click();
+          assert.equal(await page.locator('#miniV2CollectionMenu .mini-v2-dashboard').isVisible(), true);
+          const box = await page.locator('#miniV2CollectionMenu').boundingBox();
+          assert.ok(box.x >= 0 && box.x + box.width <= width);
+          await page.keyboard.press('Escape');
+        }
+        await open(soldier);
+        await action('edit-mini').click();
+        await page.locator('[data-edit-field="notes"]').fill('Retained banner draft');
+        assert.deepEqual(await geometry(), initial, `pending work must not resize the header at ${width}`);
+        await action('close-detail').click();
+        await review('review-editor-drafts');
+        assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Retained banner draft');
+        await page.locator('[data-summary-panel="changes"]').click();
+        await page.locator('.mini-v2-app-header > span').click();
+        assert.equal(await page.locator('#miniV2ChangesMenu').isVisible(), false);
+        assert.equal(await page.locator('[data-edit-field="notes"]').isVisible(), true);
+        await page.locator('[data-summary-panel="changes"]').click();
+        await page.keyboard.press('Escape');
+        assert.equal(await page.locator('[data-edit-field="notes"]').isVisible(), true);
+        assert.deepEqual(await geometry(), initial);
+      }
+      const large = JSON.parse(JSON.stringify(data));
+      const base = large.groups[0];
+      large.groups = Array.from({ length: 120 }, (_, i) => ({ ...base, rootId: `large-${i}`, name: `Miniature ${i}`,
+        copies: Array.from({ length: 5 }, (_, j) => ({ ...base.copies[0], id: `large-${i}-${j}`, sticker: '', currentLocation: 'Quest Minis' })) }));
+      for (const width of [1440, 820, 390, 320]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh(makeHtml(large));
+        assert.ok(await page.locator('.mini-v2-collection-total').evaluate(n => n.scrollWidth <= n.clientWidth), `large collection total at ${width}`);
+        assert.match(await page.locator('.mini-v2-collection-total').textContent(), /600.*120/s);
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('collection shortcuts are copy-level, independent of filters, and Back restores browsing and drafts', async () => {
+      await fresh();
+      await page.locator('#miniV2SearchInput').fill('Zhent');
+      await location('Spare People');
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="notes"]').fill('Work before the shortcut');
+      const shortcut = value => page.locator(`.mini-v2-summary-desktop [data-collection-view="${value}"]`);
+      await shortcut('away').click();
+      assert.equal(await page.locator('[data-browse-mode="individuals"]').getAttribute('aria-pressed'), 'true', JSON.stringify(errors));
+      assert.deepEqual(await browseCopies(), ['086-BREJAG-01', '048-SPIFOLFIG-07', '048-SPIFOLFIG-09', '093-CROCAP-02']);
+      assert.equal(await action('clear-filters').innerText(), 'Back');
+      assert.match(await page.locator('#miniV2BrowseCount').textContent(), /Away from home: 4/);
+      await shortcut('missing').click();
+      assert.deepEqual(await browseCopies(), ['121-DRORAN-01', '121-DRORAN-02']);
+      await mode('groups');
+      assert.equal(await page.locator('.mini-v2-name').innerText(), 'Drow Ranger Captain');
+      await action('clear-filters').click();
+      assert.equal(await page.locator('[data-browse-mode="groups"]').getAttribute('aria-pressed'), 'true');
+      assert.equal(await page.locator('#miniV2SearchInput').inputValue(), 'Zhent');
+      assert.equal(await page.locator('#miniV2LocationLabel').innerText(), 'Spare People');
+      assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Work before the shortcut');
+      await shortcut('away').click();
+      await shortcut('away').click();
+      assert.equal(await page.locator('#miniV2SearchInput').inputValue(), 'Zhent');
+      await page.setViewportSize({ width: 390, height: 1000 });
+      await page.locator('[data-summary-panel="collection"]').click();
+      await page.locator('#miniV2CollectionMenu [data-collection-view="missing"]').click();
+      assert.equal((await browseCopies()).length, 2);
+      await action('clear-filters').click();
+      assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Work before the shortcut');
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('collection counts use applied copies, exclude drafts and n/a, and recovery can reveal work outside a shortcut', async () => {
+      const extra = JSON.parse(JSON.stringify(data));
+      extra.groups[6].copies[0].sticker = 'n/a';
+      await fresh(makeHtml(extra));
+      const shortcut = value => page.locator(`.mini-v2-summary-desktop [data-collection-view="${value}"]`);
+      assert.match(await shortcut('missing').innerText(), /1\s+missing sticker/);
+      await open(fighter);
+      await action('set-all-home').click();
+      assert.match(await shortcut('away').innerText(), /4\s+away/);
+      await action('save-changes').click();
+      assert.match(await shortcut('away').innerText(), /2\s+away/);
+      await select('048-SPIFOLFIG-01').selectOption('Quest Minis');
+      await shortcut('missing').click();
+      assert.deepEqual(await browseCopies(), ['121-DRORAN-02']);
+      await review('review-changes');
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-01');
+      assert.ok((await browseCopies()).includes('048-SPIFOLFIG-01'));
+      await action('new-group').click();
+      await page.locator('#miniV2EditName').fill('Unpublished');
+      await action('add-copy').click();
+      assert.match(await page.locator('.mini-v2-collection-total').innerText(), /28.*9/s);
+      await page.locator('[data-summary-panel="changes"]').click();
+      assert.match(await page.locator('#miniV2ChangesMenu').innerText(), /Pending locations.*1 copy.*Resume drafts.*1 group/s);
+      if (process.env.SCREENSHOT_PATH) await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-banner-recovery.png') });
+    });
 
     await check('view selector changes rows but preserves header geometry and inspector', async () => {
       for (const width of [1440, 1100, 980, 390]) {
@@ -77,16 +217,25 @@ const firstCopy = '013-ZHESOL-01';
             const headerRect = header.getBoundingClientRect();
             const titleRect = header.querySelector('span').getBoundingClientRect();
             const titleGap = controlRect.left - titleRect.right;
+            const title = header.querySelector('span');
+            const newButton = header.querySelector('[data-action="new-group"]');
+            const newRect = newButton.getBoundingClientRect();
             const labelsFit = [...control.querySelectorAll('button')].every(n => n.scrollWidth <= n.clientWidth);
             control.style.display = 'none';
             note.hidden = false;
             const originalHeight = header.getBoundingClientRect().height;
             control.style.display = '';
             note.hidden = true;
-            return { height, originalHeight, labelsFit, titleGap, inside: controlRect.right <= headerRect.right && controlRect.left >= headerRect.left };
+            return { height, originalHeight, labelsFit, titleGap,
+              titleFits: title.scrollWidth <= title.clientWidth,
+              titleWidth: title.clientWidth, titleScroll: title.scrollWidth,
+              headerWidth: headerRect.width,
+              newInside: newRect.left >= controlRect.right && newRect.right <= headerRect.right,
+              inside: controlRect.right <= headerRect.right && controlRect.left >= headerRect.left };
           });
           assert.equal(measurements.height, measurements.originalHeight, `header height at ${width}, open=${detailOpen}`);
           assert.ok(measurements.inside && measurements.labelsFit);
+          assert.ok(measurements.titleFits && measurements.newInside, `creation action and browse title at ${width}, open=${detailOpen}: ${JSON.stringify(measurements)}`);
           assert.ok(Math.abs(measurements.titleGap - 16) < 1, `title gap at ${width}, open=${detailOpen}`);
           const tableGeometry = () => page.locator('.mini-v2-browse-table').evaluate(table => ({
             rowHeight: table.tBodies[0].rows[0].getBoundingClientRect().height,
@@ -96,12 +245,13 @@ const firstCopy = '013-ZHESOL-01';
           await page.locator('.mini-v2-copy-select').evaluateAll(nodes => nodes.forEach(n => { n.__retained = true; }));
           const toggle = page.locator('[data-browse-mode="individuals"]');
           const before = await page.locator('.mini-v2-view-switch').boundingBox();
+          if (width < 980) before.y += await page.evaluate(() => document.body.scrollTop);
           await toggle.click();
           assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
           assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), 28);
           assert.equal(await page.locator('.mini-v2-browse-table th').first().innerText(), 'ID');
           assert.equal(await page.locator('.mini-v2-browse-table th').nth(2).innerText(), 'CURRENT LOCATION');
-          assert.match(await page.locator('#miniV2SummaryLane').innerText(), /Visible 28 individuals/i);
+          assert.match(await page.locator('#miniV2BrowseCount').textContent(), /28 individuals/i);
           assert.deepEqual(await tableGeometry(), originalGeometry);
           if (width >= 1280 && detailOpen) {
             assert.ok(await page.locator('.mini-v2-list-wrap').evaluate(wrap =>
@@ -110,6 +260,7 @@ const firstCopy = '013-ZHESOL-01';
           }
           assert.ok(await page.locator('.mini-v2-copy-select').evaluateAll(nodes => nodes.every(n => n.__retained)));
           const after = await page.locator('.mini-v2-view-switch').boundingBox();
+          if (width < 980) after.y += await page.evaluate(() => document.body.scrollTop);
           if (JSON.stringify(after) !== JSON.stringify(before) && process.env.SCREENSHOT_PATH) {
             await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-selector-failure.png') });
           }
@@ -251,7 +402,7 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Spirit Folk Fighter');
       assert.equal(await page.locator('#miniV2Root').evaluate(n => n.classList.contains('mini-v2-has-detail')), true);
       await select('048-SPIFOLFIG-01').selectOption('Quest Minis');
-      await action('review-changes').click();
+      await review('review-changes');
       assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-01');
       assert.equal(await page.locator('#miniV2LocationLabel').innerText(), 'All locations');
       await action('reset-changes').click();
@@ -275,7 +426,7 @@ const firstCopy = '013-ZHESOL-01';
       await page.locator('[data-sort-key="sticker"]').click();
       assert.deepEqual(await browseCopies(), ['013-ZHESOL-01', '013-ZHESOL-02', '013-ZHESOL-03']);
       await page.locator('[data-facet-key="more"]').click();
-      await page.locator('[data-facet-flag="needsStickersOnly"]').click();
+      await page.locator('[data-facet-kind="stickers"][data-facet-value="Missing"]').click();
       assert.deepEqual(await browseCopies(), ['013-ZHESOL-03']);
       await mode('groups');
       assert.equal(await page.locator('.mini-v2-name').innerText(), 'Zhent Soldier');
@@ -546,6 +697,68 @@ const firstCopy = '013-ZHESOL-01';
       assert.ok(Math.abs(await tableWidth() - baseline) < 2);
     });
 
+    await check('filter count bubbles have a clear label gap and balanced padding without changing button height', async () => {
+      for (const width of [1440, 390, 360]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        const typeButton = page.locator('button[data-facet-key="creatureTypes"]');
+        const baseWidth = (await typeButton.boundingBox()).width;
+        await typeButton.click();
+        const choose = value => page.locator(`[data-facet-kind="creatureTypes"][data-facet-value="${value}"]`).click();
+        const values = await page.locator('[data-facet-kind="creatureTypes"]').evaluateAll(nodes => nodes.map(n => n.dataset.facetValue));
+        await choose(values[0]);
+        assert.equal(await typeButton.locator('.mini-v2-facet-count').count(), 0);
+        assert.equal((await typeButton.boundingBox()).width, baseWidth);
+        for (let count = 2; count <= 12; count++) {
+          await choose(values[count - 1]);
+          if (![2, 5, 12].includes(count)) continue;
+          const measured = await typeButton.evaluate(node => {
+            const button = node.getBoundingClientRect();
+            const label = node.querySelector('.mini-v2-facet-label').getBoundingClientRect();
+            const badgeNode = node.querySelector('.mini-v2-facet-count');
+            const badge = badgeNode.getBoundingClientRect();
+            const range = document.createRange();
+            range.selectNodeContents(badgeNode);
+            const number = range.getBoundingClientRect();
+            return { width: button.width, height: button.height, badgeWidth: badge.width, badgeHeight: badge.height,
+              gap: badge.left - label.right, leftPadding: label.left - button.left, rightPadding: button.right - badge.right,
+              centered: Math.abs((number.left + number.right) / 2 - (badge.left + badge.right) / 2),
+              vertical: Math.abs((badge.top + badge.bottom) / 2 - (button.top + button.bottom) / 2),
+              text: badgeNode.textContent };
+          });
+          assert.equal(measured.gap, 6);
+          assert.equal(measured.leftPadding, measured.rightPadding);
+          assert.equal(measured.height, 30);
+          assert.equal(measured.badgeHeight, 18);
+          assert.equal(measured.width, baseWidth + measured.badgeWidth + 6);
+          assert.ok(measured.centered < 1 && measured.vertical < 1);
+          assert.equal(measured.text, String(count));
+        }
+        await action('clear-open-facet').click();
+        for (const value of ['Aberration', 'Beast', 'Dragon', 'Fey', 'Humanoid']) await choose(value);
+        await page.locator('button[data-facet-key="sexes"]').click();
+        for (const value of ['Female', 'Male']) {
+          await page.locator(`[data-facet-kind="sexes"][data-facet-value="${value}"]`).click();
+        }
+        await page.locator('button[data-facet-key="sexes"]').click();
+        await settle();
+        const wrap = await page.locator('#miniV2FacetBar').evaluate(node => {
+          const height = node.getBoundingClientRect().height;
+          const buttons = [...node.querySelectorAll('button')];
+          buttons.forEach(n => { n.style.gap = '0px'; });
+          const originalHeight = node.getBoundingClientRect().height;
+          buttons.forEach(n => { n.style.removeProperty('gap'); });
+          return { height, originalHeight };
+        });
+        assert.equal(wrap.height, wrap.originalHeight, `Type 5 / Sex 2 row does not acquire a new line at ${width}`);
+        assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+        if (process.env.SCREENSHOT_PATH) await page.screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-filter-counts-${width}.png`)
+        });
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
     await check('keyboard focus survives copy edits, sort, and facet selection', async () => {
       await fresh();
       await open(soldier);
@@ -574,7 +787,7 @@ const firstCopy = '013-ZHESOL-01';
       assert.match(await action('review-changes').innerText(), /1/);
       assert.equal(await warned(), true);
       await page.locator('#miniV2SearchInput').fill('Warhorse');
-      await action('review-changes').click();
+      await review('review-changes');
       assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Zhent Soldier');
       assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
       await action('reset-changes').click();
@@ -588,7 +801,7 @@ const firstCopy = '013-ZHESOL-01';
         await page.locator('.mini-v2-copy-select').first().selectOption('Encounter Box G');
       }
       for (const id of ids) {
-        await action('review-changes').click();
+        await review('review-changes');
         assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), data.groups.find(group => group.rootId === id).name);
       }
     });
@@ -679,11 +892,11 @@ const firstCopy = '013-ZHESOL-01';
         assert.equal(await page.locator('.mini-v2-editor-copy-note').count(), 3);
         assert.equal(await action('save-changes').count(), 0);
         assert.equal(await action('save-edit').isDisabled(), true);
-        assert.equal(await page.locator('[data-edit-field="paint"]').isChecked(), true);
+        assert.equal(await page.locator('[data-edit-field="paint"]').inputValue(), 'Painted');
         assert.equal(await page.locator('.mini-v2-editor .mini-v2-read-card, .mini-v2-editor .mini-v2-note-card').count(), 0);
         assert.equal(await page.locator('[data-edit-field="set"]').evaluate(n => n.tagName), 'SELECT');
         assert.deepEqual(await page.locator('[data-edit-field="set"] option').evaluateAll(nodes => nodes.map(n => n.value)),
-          ['', 'Aberrations', 'Angelfire', 'Lords of Madness', 'n/a', 'Night Below', 'Underdark (2005)']);
+          ['', 'Aberrations', 'Angelfire', 'Lords of Madness', 'n/a', 'Night Below', 'Underdark (2005)', 'Not specified']);
         assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
         assert.ok(await page.locator('#miniV2EditName').evaluate(n => n.clientWidth > 60));
         if (process.env.SCREENSHOT_PATH) {
@@ -695,6 +908,72 @@ const firstCopy = '013-ZHESOL-01';
         await action('discard-edit').click();
         await settle();
         assert.deepEqual(await geometry(), before);
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('editor outward focus rings have gutter clearance without moving any controls', async () => {
+      for (const width of [1440, 1100, 980, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        for (const flow of ['existing', 'new']) {
+          if (flow === 'existing') {
+            await open(soldier);
+            await action('edit-mini').click();
+          } else await action('new-group').click();
+          await settle();
+          const geometry = () => page.locator('#miniV2DetailPanel').evaluate(panel => ({
+            header: panel.querySelector('.mini-v2-detail-header').getBoundingClientRect().height,
+            columns: [...panel.querySelectorAll('.mini-v2-copy-table th')].map(n => n.getBoundingClientRect().width),
+            controls: [...panel.querySelectorAll('[data-edit-field], [data-edit-copy-note], [data-edit-copy-sticker]')].map(n => {
+              const rect = n.getBoundingClientRect();
+              return { field: n.dataset.editField || n.dataset.editCopyNote || n.dataset.editCopySticker,
+                left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+            })
+          }));
+          const before = await geometry();
+          assert.deepEqual(await page.locator('#miniV2DetailScroll').evaluate(n => {
+            const style = getComputedStyle(n);
+            return [style.paddingLeft, style.marginLeft];
+          }), ['3px', '-3px']);
+          await page.locator('#miniV2DetailScroll').evaluate(n => {
+            n.style.paddingLeft = '0';
+            n.style.marginLeft = '0';
+          });
+          assert.deepEqual(await geometry(), before, `focus gutter preserves original layout at ${width}px in ${flow}`);
+          await page.locator('#miniV2DetailScroll').evaluate(n => {
+            n.style.removeProperty('padding-left');
+            n.style.removeProperty('margin-left');
+          });
+          const fields = page.locator('.mini-v2-editor input:enabled, .mini-v2-editor select:enabled, .mini-v2-editor textarea:enabled');
+          for (const field of await fields.all()) {
+            const focus = await field.evaluate(n => {
+              n.focus({ preventScroll: true });
+              const style = getComputedStyle(n);
+              const rect = n.getBoundingClientRect();
+              const clip = document.getElementById('miniV2DetailScroll').getBoundingClientRect();
+              const cell = n.closest('.mini-v2-copy-note-cell')?.getBoundingClientRect();
+              const extent = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+              return { visible: n.matches(':focus-visible'), outline: parseFloat(style.outlineWidth),
+                offset: parseFloat(style.outlineOffset), fieldLeft: rect.left, clipLeft: clip.left,
+                leftFits: rect.left - extent >= clip.left - 0.1,
+                rightFits: rect.right > clip.right || rect.right + extent <= clip.right - 12 + 0.1,
+                noteRingFits: !cell || (rect.left - extent >= cell.left && rect.right + extent <= cell.right
+                  && rect.top - extent >= cell.top && rect.bottom + extent <= cell.bottom) };
+            });
+            assert.equal(focus.visible, true);
+            assert.equal(focus.outline, 2);
+            assert.equal(focus.offset, 1);
+            assert.ok(focus.leftFits && focus.rightFits && focus.noteRingFits,
+              `focus ring is clipped at ${width}px in ${flow}: ${JSON.stringify(focus)}`);
+            assert.deepEqual(await geometry(), before);
+          }
+          await page.locator('[data-edit-field="size"]').evaluate(n => n.focus({ preventScroll: true }));
+          if (process.env.SCREENSHOT_PATH) await page.locator('#miniV2DetailPanel').screenshot({
+            path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-focus-ring-${flow}-${width}.png`)
+          });
+          await action('discard-edit').click();
+        }
       }
       await page.setViewportSize({ width: 1440, height: 1000 });
     });
@@ -721,10 +1000,12 @@ const firstCopy = '013-ZHESOL-01';
       await page.locator('[data-edit-field="notes"]').fill('First line\nSecond line');
       await page.locator('[data-edit-field="notes"]').press('Enter');
       assert.equal(await page.locator('.mini-v2-editor').count(), 1);
-      await page.locator('[data-edit-field="paint"]').uncheck();
+      await page.locator('[data-edit-field="paint"]').selectOption('Unpainted');
       await mode('individuals');
       assert.equal(await note.evaluate(n => n.__sameNode), true);
       await page.locator('[data-detail-copy-id="048-SPIFOLFIG-02"] td').first().click();
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), '048-SPIFOLFIG-01');
+      await page.locator('[data-detail-copy-id="048-SPIFOLFIG-02"] td').nth(1).click();
       assert.equal(await role.inputValue(), 'Spellcaster');
       await action('save-edit').click();
       await settle();
@@ -810,7 +1091,7 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await page.locator('.mini-v2-editor').count(), 0);
       assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Spirit Folk Fighter');
       assert.equal(await page.locator('tr[data-copy-id="013-ZHESOL-01"] .mini-v2-cell-role').innerText(), 'Ranged');
-      await action('review-editor-drafts').click();
+      await review('review-editor-drafts');
       assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Support');
       await action('discard-edit').click();
       assert.equal(await action('review-editor-drafts').count(), 0);
@@ -833,11 +1114,11 @@ const firstCopy = '013-ZHESOL-01';
       await page.locator('[data-edit-field="notes"]').press('Escape');
       assert.match(await action('review-editor-drafts').innerText(), /2/);
       await page.locator('#miniV2SearchInput').fill('no-such-mini');
-      await action('review-editor-drafts').click();
+      await review('review-editor-drafts');
       assert.equal(await page.locator('#miniV2EditName').inputValue(), 'Zhent Soldier');
       assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Boss');
       assert.equal(await page.locator('[data-edit-copy-note="013-ZHESOL-02"]').inputValue(), 'Soldier draft');
-      await action('review-editor-drafts').click();
+      await review('review-editor-drafts');
       assert.equal(await page.locator('#miniV2EditName').inputValue(), 'Fighter renamed');
       assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Melee');
       assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Fighter draft');
@@ -845,7 +1126,7 @@ const firstCopy = '013-ZHESOL-01';
       await action('save-edit').click();
       assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Fighter renamed');
       assert.match(await action('review-editor-drafts').innerText(), /1/);
-      await action('review-editor-drafts').click();
+      await review('review-editor-drafts');
       await action('discard-edit').click();
       assert.equal(await action('review-editor-drafts').count(), 0);
       assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Zhent Soldier');
@@ -937,7 +1218,7 @@ const firstCopy = '013-ZHESOL-01';
       await open(soldier);
       await action('edit-mini').click();
       assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), 'Custom folk');
-      assert.equal(await page.locator('[data-edit-field="paint"]').evaluate(n => n.indeterminate), true);
+      assert.equal(await page.locator('[data-edit-field="paint"]').inputValue(), '');
       await page.locator('#miniV2EditName').fill('   ');
       await action('save-edit').click();
       assert.equal(await page.locator('#miniV2EditName').getAttribute('aria-invalid'), 'true');
@@ -945,23 +1226,23 @@ const firstCopy = '013-ZHESOL-01';
       await page.locator('[data-edit-field="role"]').selectOption('Spellcaster');
       await action('save-edit').click();
       assert.doesNotMatch(await page.locator('#miniV2DetailHeaderTags').innerText(), /Unpainted/i);
-      assert.equal(await page.locator('.mini-v2-product-grid .mini-v2-read-card').last().locator('.mini-v2-read-value').innerText(), 'Not specified');
+      assert.equal(await page.locator('.mini-v2-product-grid .mini-v2-read-card').last().locator('.mini-v2-read-value').innerText(), '—');
       assert.match(await page.locator('.mini-v2-read-card').nth(5).innerText(), /<script>not executable<\/script>/);
       await action('edit-mini').click();
       assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), '');
       assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), 'Custom folk');
       assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Spellcaster');
       const paint = page.locator('[data-edit-field="paint"]');
-      assert.equal(await paint.evaluate(n => n.indeterminate), true);
+      assert.equal(await paint.inputValue(), '');
       await page.setViewportSize({ width: 390, height: 1000 });
       if (process.env.SCREENSHOT_PATH) await page.locator('#miniV2DetailPanel').screenshot({
         path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-editor-unspecified-paint.png')
       });
-      await paint.check();
-      assert.equal(await paint.evaluate(n => n.indeterminate), false);
+      await paint.selectOption('Painted');
+      assert.equal(await paint.inputValue(), 'Painted');
       await action('save-edit').click();
       await action('edit-mini').click();
-      assert.equal(await page.locator('[data-edit-field="paint"]').isChecked(), true);
+      assert.equal(await page.locator('[data-edit-field="paint"]').inputValue(), 'Painted');
       await page.setViewportSize({ width: 1440, height: 1000 });
     });
 
@@ -998,7 +1279,372 @@ const firstCopy = '013-ZHESOL-01';
       unspecified.groups[0].notes = '';
       await fresh(makeHtml(unspecified));
       await open(soldier);
-      assert.equal(await status.getAttribute('title'), 'Missing: Notes');
+      assert.match(await status.innerText(), /^Ready$/i);
+    });
+
+    await check('paint dropdown keeps its explicit order and preserves legacy values, drafts and saves', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      const paint = page.locator('[data-edit-field="paint"]');
+      assert.equal(await paint.inputValue(), 'Painted');
+      assert.equal(await paint.evaluate(n => n.tagName), 'SELECT');
+      assert.deepEqual(await paint.locator('option').evaluateAll(nodes => nodes.map(n => n.value)),
+        ['', 'Painted', 'Unpainted', 'Work in Progress']);
+      assert.equal(await paint.evaluate(n => {
+        const set = document.querySelector('[data-edit-field="set"]');
+        return n.getBoundingClientRect().top === set.getBoundingClientRect().top
+          && n.getBoundingClientRect().height === set.getBoundingClientRect().height;
+      }), true);
+      await paint.evaluate(n => {
+        n.add(new Option('Not specified', 'Not specified'));
+        n.value = 'Not specified';
+        n.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await action('save-edit').click();
+      assert.equal(await paint.getAttribute('aria-invalid'), 'true');
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /Painted, Unpainted, or Work in Progress/);
+      await action('discard-edit').click();
+      await open('086-BREJAG');
+      const readPaint = page.locator('.mini-v2-product-grid .mini-v2-read-card').last().locator('.mini-v2-read-value');
+      assert.equal(await readPaint.innerText(), 'Unpainted');
+      const height = await readPaint.evaluate(n => n.closest('.mini-v2-read-card').clientHeight);
+      await action('edit-mini').click();
+      assert.equal(await paint.inputValue(), 'Unpainted');
+      await paint.selectOption('Work in Progress');
+      await action('close-detail').click();
+      await open('086-BREJAG');
+      assert.equal(await paint.inputValue(), 'Work in Progress');
+      await action('save-edit').click();
+      assert.equal(await readPaint.innerText(), 'Work in Progress');
+      assert.equal(await readPaint.evaluate(n => n.closest('.mini-v2-read-card').clientHeight), height);
+      assert.doesNotMatch(await page.locator('#miniV2DetailHeaderTags').innerText(), /missing|unpainted|work in progress/i);
+      await action('edit-mini').click();
+      await paint.selectOption('Painted');
+      await action('discard-edit').click();
+      assert.equal(await readPaint.innerText(), 'Work in Progress');
+      await action('edit-mini').click();
+      assert.equal(await paint.inputValue(), 'Work in Progress');
+      if (process.env.SCREENSHOT_PATH) await page.locator('#miniV2DetailPanel').screenshot({
+        path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-paint-dropdown.png')
+      });
+      await paint.selectOption('Unpainted');
+      await action('save-edit').click();
+      assert.equal(await readPaint.innerText(), 'Unpainted');
+      await action('new-group').click();
+      assert.equal(await paint.inputValue(), '');
+      await page.locator('#miniV2EditName').fill('Painting Project');
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await fillNewDetails({ paint: 'Work in Progress' });
+      assert.equal(await action('save-edit').isDisabled(), false);
+      await action('save-edit').click();
+      assert.equal(await readPaint.innerText(), 'Work in Progress');
+      await action('edit-mini').click();
+      assert.equal(await paint.inputValue(), 'Work in Progress');
+    });
+
+    await check('Painted filter includes only Painted, not Unpainted, Work in Progress or unknown paint in either view', async () => {
+      const mixed = JSON.parse(JSON.stringify(data));
+      const states = [true, false, 'Painted', 'Unpainted', 'Work in Progress', null, 'Not specified', '', 'Custom paint'];
+      mixed.groups.forEach((group, index) => { group.paint = states[index]; });
+      await fresh(makeHtml(mixed));
+      await page.locator('[data-facet-key="more"]').click();
+      await page.locator('[data-facet-kind="paints"][data-facet-value="Painted"]').click();
+      const rootIds = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(nodes => nodes.map(n => n.dataset.groupId));
+      assert.deepEqual(await rootIds(), [soldier, fighter]);
+      await mode('individuals');
+      assert.deepEqual(await browseCopies(), [mixed.groups[0], mixed.groups[2]].flatMap(group => group.copies.map(copy => copy.id)));
+      await mode('groups');
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="paint"]').selectOption('Work in Progress');
+      assert.deepEqual(await rootIds(), [soldier, fighter]);
+      await action('save-edit').click();
+      assert.deepEqual(await rootIds(), [fighter]);
+      assert.match(await page.locator('#miniV2DetailContent').innerText(), /outside your current browse filters/);
+      await mode('individuals');
+      assert.deepEqual(await browseCopies(), mixed.groups[2].copies.map(copy => copy.id));
+    });
+
+    await check('More paint statuses combine with OR and retain their explicit order in both browse views', async () => {
+      const mixed = JSON.parse(JSON.stringify(data));
+      const states = [true, false, 'Painted', 'Unpainted', 'Work in Progress', null, 'Not specified', '', 'Custom paint'];
+      mixed.groups.forEach((group, index) => { group.paint = states[index]; });
+      await fresh(makeHtml(mixed));
+      await page.locator('[data-facet-key="more"]').click();
+      assert.deepEqual(await page.locator('[data-facet-kind="paints"] .mini-v2-facet-tile-label').allTextContents(),
+        ['Painted', 'Unpainted', 'In Progress']);
+      assert.deepEqual(await page.locator('[data-facet-kind="paints"]').evaluateAll(nodes => nodes.map(n => n.dataset.facetValue)),
+        ['Painted', 'Unpainted', 'Work in Progress']);
+      assert.equal(await page.locator('[data-facet-kind="paints"]').last().getAttribute('title'), 'Work in Progress');
+      const roots = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(nodes => nodes.map(n => n.dataset.groupId));
+      const paint = value => page.locator(`[data-facet-kind="paints"][data-facet-value="${value}"]`).click();
+      await paint('Work in Progress');
+      assert.deepEqual(await roots(), [mixed.groups[4].rootId]);
+      await paint('Unpainted');
+      assert.deepEqual(await roots(), [1, 3, 4].map(index => mixed.groups[index].rootId));
+      await paint('Painted');
+      assert.deepEqual(await roots(), mixed.groups.slice(0, 5).map(group => group.rootId));
+      assert.equal(await page.locator('[data-facet-key="more"] .mini-v2-facet-count').innerText(), '3');
+      await paint('Work in Progress');
+      assert.deepEqual(await roots(), mixed.groups.slice(0, 4).map(group => group.rootId));
+      await mode('individuals');
+      assert.deepEqual(await browseCopies(), mixed.groups.slice(0, 4).flatMap(group => group.copies.map(copy => copy.id)));
+      await page.locator('button[data-facet-key="more"]').click();
+      await action('clear-open-facet').click();
+      assert.equal(await page.locator('button[data-facet-key="more"]').getAttribute('aria-pressed'), 'false');
+      assert.equal((await browseCopies()).length, 28);
+      assert.equal(await page.locator('[data-facet-flag="paintedOnly"]').count(), 0);
+      await mode('groups');
+    });
+
+    await check('More combines Set, paint, Role and missing stickers with AND and clears only its own filters', async () => {
+      const mixed = JSON.parse(JSON.stringify(data));
+      const setName = 'Collector set with a long name & alternate <edition>';
+      mixed.groups.slice(0, 3).forEach(group => { group.set = setName; });
+      Object.assign(mixed.groups[0], { role: 'Melee', paint: 'Work in Progress' });
+      mixed.groups[0].copies[0].sticker = 'n/a';
+      mixed.groups[0].copies[1].sticker = '';
+      Object.assign(mixed.groups[1], { role: 'Melee', paint: 'Unpainted' });
+      Object.assign(mixed.groups[2], { role: 'Ranged', paint: 'Work in Progress' });
+      await fresh(makeHtml(mixed));
+      await page.locator('[data-facet-key="more"]').click();
+      const roots = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(nodes => nodes.map(n => n.dataset.groupId));
+      await page.locator('#miniV2SetFilter').selectOption(setName);
+      assert.deepEqual(await roots(), mixed.groups.slice(0, 3).map(group => group.rootId));
+      assert.equal(await page.locator('#miniV2SetFilter').getAttribute('title'), setName);
+      await page.locator('[data-facet-kind="paints"][data-facet-value="Work in Progress"]').click();
+      assert.deepEqual(await roots(), [soldier, fighter]);
+      await page.locator('[data-facet-kind="roles"][data-facet-value="Melee"]').click();
+      await page.locator('[data-facet-kind="stickers"][data-facet-value="Missing"]').click();
+      assert.deepEqual(await roots(), [soldier]);
+      assert.equal(await page.locator('[data-facet-key="more"] .mini-v2-facet-count').innerText(), '4');
+      await mode('individuals');
+      assert.deepEqual(await browseCopies(), [mixed.groups[0].copies[1].id]);
+      await page.locator('[data-facet-key="sizes"]').click();
+      await page.locator('[data-facet-kind="sizes"][data-facet-value="Large"]').click();
+      assert.equal(await page.locator('.mini-v2-empty').count(), 1);
+      await page.locator('button[data-facet-key="more"]').click();
+      await action('clear-open-facet').click();
+      assert.equal(await page.locator('#miniV2SetFilter').inputValue(), '');
+      assert.deepEqual(await browseCopies(), [mixed.groups[8].copies[0].id]);
+      assert.equal(await page.locator('button[data-facet-key="sizes"]').getAttribute('aria-pressed'), 'true');
+      await action('clear-filters').click();
+      assert.equal((await browseCopies()).length, 28);
+      await mode('groups');
+    });
+
+    await check('More follows card order with matching Set typography and a single aligned paint row at full width', async () => {
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      for (const detailOpen of [false, true]) {
+        await fresh();
+        if (detailOpen) await open(soldier);
+        await page.locator('button[data-facet-key="more"]').click();
+        await page.locator('#miniV2SetFilter').selectOption('Lords of Madness');
+        await settle();
+        const layout = await page.locator('.mini-v2-facet-more').evaluate(node => {
+          const paint = [...node.querySelectorAll('[data-facet-kind="paints"]')].map(n => {
+            const box = n.getBoundingClientRect();
+            return { left: box.left, top: box.top, width: box.width, height: box.height };
+          });
+          const roles = [...node.querySelectorAll('[data-facet-kind="roles"]')].slice(0, 3)
+            .map(n => ({ left: n.getBoundingClientRect().left, width: n.getBoundingClientRect().width }));
+          const stickers = [...node.querySelectorAll('[data-facet-kind="stickers"]')]
+            .map(n => ({ left: n.getBoundingClientRect().left, top: n.getBoundingClientRect().top, width: n.getBoundingClientRect().width }));
+          const style = n => {
+            const css = getComputedStyle(n);
+            return { font: css.fontFamily, size: css.fontSize, weight: css.fontWeight };
+          };
+          return { headings: [...node.querySelectorAll('.mini-v2-facet-group-label')].map(n => n.textContent),
+            paint, roles, stickers, setStyle: style(node.querySelector('select')),
+            tileStyle: style(node.querySelector('.mini-v2-facet-tile-label')) };
+        });
+        assert.deepEqual(layout.headings, ['Role', 'Set', 'Paint status', 'Stickers']);
+        assert.deepEqual(layout.setStyle, layout.tileStyle);
+        assert.equal(layout.setStyle.weight, '600');
+        assert.ok(layout.paint.every(n => n.top === layout.paint[0].top && n.height === layout.paint[0].height));
+        layout.paint.forEach((n, index) => {
+          assert.equal(n.left, layout.roles[index].left);
+          assert.equal(n.width, layout.roles[index].width);
+        });
+        assert.equal(layout.stickers.length, 2);
+        assert.equal(layout.stickers[0].top, layout.stickers[1].top);
+        layout.stickers.forEach((n, index) => {
+          assert.equal(n.left, layout.roles[index].left);
+          assert.equal(n.width, layout.roles[index].width);
+        });
+        assert.deepEqual(await page.locator('[data-facet-kind="stickers"] .mini-v2-facet-tile-label').allTextContents(),
+          ['Assigned', 'Missing']);
+        assert.equal(await page.locator('[data-facet-flag]').count(), 0);
+        if (process.env.SCREENSHOT_PATH) await page.screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-more-refined${detailOpen ? '-detail' : ''}.png`)
+        });
+      }
+    });
+
+    await check('Assigned and Missing sticker filters use copy-level OR and match mixed groups without hiding n/a', async () => {
+      const mixed = JSON.parse(JSON.stringify(data));
+      mixed.groups[0].copies[0].sticker = 'n/a';
+      mixed.groups[0].copies[1].sticker = '  ';
+      mixed.groups[2].copies.forEach(copy => { copy.sticker = ''; });
+      await fresh(makeHtml(mixed));
+      const assigned = copy => !!String(copy.sticker || '').trim();
+      const roots = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(nodes => nodes.map(n => n.dataset.groupId));
+      const toggle = value => page.locator(`[data-facet-kind="stickers"][data-facet-value="${value}"]`).click();
+      await page.locator('button[data-facet-key="more"]').click();
+      await toggle('Assigned');
+      assert.deepEqual(await roots(), mixed.groups.filter(group => group.copies.some(assigned)).map(group => group.rootId));
+      await toggle('Missing');
+      assert.deepEqual(await roots(), mixed.groups.map(group => group.rootId));
+      assert.equal(await page.locator('button[data-facet-key="more"] .mini-v2-facet-count').innerText(), '2');
+      await toggle('Assigned');
+      assert.deepEqual(await roots(), mixed.groups.filter(group => group.copies.some(copy => !assigned(copy))).map(group => group.rootId));
+      await mode('individuals');
+      assert.deepEqual(await browseCopies(), mixed.groups.flatMap(group => group.copies.filter(copy => !assigned(copy)).map(copy => copy.id)));
+      await page.locator('button[data-facet-key="more"]').click();
+      await toggle('Missing');
+      const button = page.locator('[data-facet-kind="stickers"][data-facet-value="Assigned"]');
+      await button.focus();
+      await page.keyboard.press('Space');
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.facetValue), 'Assigned');
+      const assignedIds = mixed.groups.flatMap(group => group.copies.filter(assigned).map(copy => copy.id));
+      assert.deepEqual(await browseCopies(), assignedIds);
+      assert.ok(assignedIds.includes(firstCopy), 'explicit n/a remains a resolved rather than missing sticker');
+      await toggle('Missing');
+      assert.equal((await browseCopies()).length, 28);
+      await action('clear-open-facet').click();
+      assert.equal(await page.locator('button[data-facet-key="more"]').getAttribute('aria-pressed'), 'false');
+      assert.ok(await page.locator('[data-facet-kind="stickers"]').evaluateAll(nodes => nodes.every(n => n.getAttribute('aria-pressed') === 'false')));
+      await mode('groups');
+    });
+
+    await check('facets include explicit Not specified and unfamiliar saved choices without treating blanks as that choice', async () => {
+      const mixed = JSON.parse(JSON.stringify(data));
+      for (const key of ['size', 'creatureType', 'race', 'sex', 'role', 'set']) mixed.groups[0][key] = 'Not specified';
+      mixed.groups[1].role = '';
+      mixed.groups[2].role = 'Custom <role> & helper';
+      await fresh(makeHtml(mixed));
+      const fields = { sizes: 'size', creatureTypes: 'creatureType', races: 'race', sexes: 'sex', more: 'role' };
+      for (const [facet, field] of Object.entries(fields)) {
+        await page.locator(`button[data-facet-key="${facet}"]`).click();
+        const kind = facet === 'more' ? 'roles' : facet;
+        await page.locator(`[data-facet-kind="${kind}"][data-facet-value="Not specified"]`).click();
+        assert.equal(await page.locator('.mini-v2-name').innerText(), mixed.groups[0].name, field);
+        await action('clear-open-facet').click();
+      }
+      await page.locator('[data-facet-kind="roles"][data-facet-value="Custom <role> & helper"]').click();
+      assert.equal(await page.locator('.mini-v2-name').innerText(), mixed.groups[2].name);
+      await action('clear-open-facet').click();
+      await page.locator('#miniV2SetFilter').selectOption('Not specified');
+      assert.equal(await page.locator('.mini-v2-name').innerText(), mixed.groups[0].name);
+      await page.locator('#miniV2SetFilter').selectOption('n/a');
+      assert.deepEqual(await page.locator('.mini-v2-name').allTextContents(), [mixed.groups[1].name, mixed.groups[8].name]);
+    });
+
+    await check('Set filter keeps focus and catalog choices after editing the final matching group', async () => {
+      await fresh();
+      const archmage = data.groups.find(group => group.name === 'Archmage');
+      await open(archmage.rootId);
+      await page.locator('[data-facet-key="more"]').click();
+      await page.locator('#miniV2SetFilter').focus();
+      await page.locator('#miniV2SetFilter').selectOption('Angelfire');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'miniV2SetFilter');
+      assert.equal(await page.locator('.mini-v2-name').innerText(), 'Archmage');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="set"]').selectOption('n/a');
+      await action('save-edit').click();
+      assert.equal(await page.locator('.mini-v2-empty').count(), 1);
+      assert.match(await page.locator('#miniV2DetailContent').innerText(), /outside your current browse filters/);
+      await page.locator('button[data-facet-key="more"]').click();
+      assert.equal(await page.locator('#miniV2SetFilter').inputValue(), 'Angelfire');
+      assert.equal(await page.locator('#miniV2SetFilter option[value="Angelfire"]').count(), 1);
+      await page.locator('#miniV2SetFilter').selectOption('');
+      assert.equal(await page.locator('.mini-v2-name').count(), 9);
+    });
+
+    await check('More stays the same width and alignment as other popovers with dozens of long sets and a thin scrollbar', async () => {
+      const stress = JSON.parse(JSON.stringify(data));
+      for (let index = 0; index < 65; index++) {
+        const group = JSON.parse(JSON.stringify(data.groups[0]));
+        group.rootId = `stress-${index}`;
+        group.role = `Custom role ${String(index).padStart(2, '0')}`;
+        group.set = `Collector series ${String(index).padStart(2, '0')} with a very long edition name & additional details`;
+        group.copies = [group.copies[0]];
+        group.copies[0].id = `${group.rootId}-01`;
+        stress.groups.push(group);
+      }
+      for (const width of [1440, 1100, 980, 390, 360]) {
+        for (const large of [false, true]) {
+          await page.setViewportSize({ width, height: large ? 560 : 1000 });
+          await fresh(large ? makeHtml(stress) : html);
+          if (width >= 980) await open(soldier);
+          const geometry = () => page.evaluate(() => ({
+            header: document.querySelector('.mini-v2-list-header').getBoundingClientRect().height,
+            tableTop: document.getElementById('miniV2TableScroll').getBoundingClientRect().top,
+            workspaceTop: document.querySelector('.mini-v2-workspace').getBoundingClientRect().top
+          }));
+          const before = await geometry();
+          await page.locator('button[data-facet-key="sizes"]').click();
+          await settle();
+          const baseline = await page.locator('#miniV2FacetPopover').evaluate(node => ({
+            left: node.getBoundingClientRect().left, width: node.getBoundingClientRect().width,
+            gridLeft: node.querySelector('.mini-v2-facet-tile-grid').getBoundingClientRect().left,
+            gridRight: node.querySelector('.mini-v2-facet-tile-grid').getBoundingClientRect().right
+          }));
+          await page.locator('button[data-facet-key="more"]').click();
+          await settle();
+          if (large) {
+            // Exercise both overlay and space-consuming scrollbar platforms.
+            await page.locator('#miniV2FacetPopoverBody').evaluate(n => { n.style.scrollbarGutter = 'stable'; });
+            await settle();
+          }
+          const measured = await page.locator('#miniV2FacetPopover').evaluate(node => {
+            const rect = node.getBoundingClientRect();
+            const body = node.querySelector('.mini-v2-facet-popover-body');
+            const controls = [...body.querySelectorAll('.mini-v2-facet-tile-grid, select')].map(n => ({
+              left: n.getBoundingClientRect().left, right: n.getBoundingClientRect().right
+            }));
+            return { left: rect.left, width: rect.width, right: rect.right, bottom: rect.bottom, height: rect.height,
+              workspaceBottom: document.querySelector('.mini-v2-workspace').getBoundingClientRect().bottom,
+              scrollbarWidth: body.offsetWidth - body.clientWidth,
+              scrollbarStyle: getComputedStyle(body).scrollbarWidth,
+              overflowing: body.scrollHeight > body.clientHeight, controls,
+              choiceLabelsFit: [...body.querySelectorAll('[data-facet-kind="paints"] .mini-v2-facet-tile-label, [data-facet-kind="stickers"] .mini-v2-facet-tile-label')]
+                .every(n => n.scrollWidth <= n.clientWidth) };
+          });
+          assert.equal(measured.width, baseline.width, `same width at ${width}, large=${large}`);
+          assert.equal(measured.left, baseline.left);
+          assert.ok(measured.right <= width && measured.choiceLabelsFit, JSON.stringify(measured));
+          assert.ok(measured.height <= Math.min((large ? 560 : 1000) * .72, 460) + 1);
+          assert.ok(measured.bottom <= Math.min(large ? 560 : 1000, measured.workspaceBottom) - 7,
+            `popover stays inside the visible pane: ${JSON.stringify(measured)}`);
+          for (const control of measured.controls) {
+            assert.ok(Math.abs(control.left - baseline.gridLeft) < 1, 'left edges align');
+            assert.ok(Math.abs(control.right - baseline.gridRight) < 1, `right edges align: ${JSON.stringify(measured)}`);
+          }
+          assert.deepEqual(await geometry(), before);
+          if (large) {
+            assert.ok(measured.overflowing && measured.scrollbarStyle === 'thin');
+            assert.ok(measured.scrollbarWidth > 0, 'exercise a scrollbar that reserves actual layout space');
+            assert.ok((await page.locator('#miniV2SetFilter option').count()) > 60);
+            await page.locator('#miniV2SetFilter').focus();
+            await page.locator('#miniV2SetFilter').selectOption(stress.groups[10].set);
+            await settle();
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'miniV2SetFilter');
+            await page.keyboard.press('Escape');
+            assert.equal(await page.locator('#miniV2FacetPopover').isVisible(), true);
+            const top = await page.locator('#miniV2FacetPopoverBody').evaluate(n => n.scrollTop);
+            await page.locator('#miniV2SetFilter').selectOption('');
+            await settle();
+            assert.equal(await page.locator('#miniV2FacetPopoverBody').evaluate(n => n.scrollTop), top);
+          }
+          assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+          if (process.env.SCREENSHOT_PATH) await page.screenshot({
+            path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-more-${width}${large ? '-stress' : ''}.png`)
+          });
+        }
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
     });
 
     await check('Set number limits new input without blocking unrelated edits to a legacy value', async () => {
@@ -1015,12 +1661,1046 @@ const firstCopy = '013-ZHESOL-01';
       await number.fill('abc');
       await action('save-edit').click();
       assert.equal(await number.getAttribute('aria-invalid'), 'true');
-      assert.match(await page.locator('#miniV2EditorError').innerText(), /three digits/);
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /starting with a digit/);
       await number.fill('1234');
       assert.equal(await number.inputValue(), '123');
       assert.equal(await number.getAttribute('aria-invalid'), null);
       await action('save-edit').click();
       assert.match(await page.locator('.mini-v2-read-card').nth(5).innerText(), /Lords of Madness \(123\)/);
+    });
+
+    await check('new groups use the same editor in both browse modes and publish only on Create', async () => {
+      for (const browseMode of ['groups', 'individuals']) {
+        await fresh();
+        await mode(browseMode);
+        const countBefore = await page.locator('.mini-v2-browse-table tbody tr').count();
+        const headerHeight = await page.locator('.mini-v2-list-header').evaluate(n => n.clientHeight);
+        await action('new-group').click();
+        await settle();
+        const rootId = await page.locator('[data-editor-root]').getAttribute('data-editor-root');
+        assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), countBefore);
+        assert.equal(await page.locator('.mini-v2-list-header').evaluate(n => n.clientHeight), headerHeight);
+        assert.equal(await page.locator('#miniV2EditName').inputValue(), '');
+        assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').count(), 1);
+        assert.equal(await action('save-edit').innerText(), 'Create Group');
+        assert.equal(await action('save-edit').isDisabled(), true);
+        assert.equal(await page.locator('#miniV2EditorError').isVisible(), false);
+        await page.locator('#miniV2EditName').fill(`Mock Scout ${browseMode}`);
+        assert.equal(await action('save-edit').isDisabled(), true);
+        assert.match(await action('save-edit').getAttribute('title'), /Home/);
+        await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+        assert.equal(await action('save-edit').isDisabled(), true);
+        assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '1 / 1');
+        await page.locator('[data-edit-field="size"]').selectOption('Small');
+        await page.locator('[data-edit-field="creatureType"]').selectOption('Humanoid');
+        await page.locator('[data-edit-field="race"]').selectOption('Elf');
+        await page.locator('[data-edit-field="sex"]').selectOption('Female');
+        await page.locator('[data-edit-field="role"]').selectOption('Ranged');
+        await page.locator('[data-edit-field="set"]').selectOption('n/a');
+        assert.equal(await action('save-edit').isDisabled(), true);
+        await page.locator('[data-edit-field="paint"]').selectOption('Painted');
+        assert.equal(await action('save-edit').isDisabled(), false);
+        await action('add-copy').click();
+        assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '2 / 2');
+        assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').count(), 2);
+        await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').first().fill('Z901');
+        await page.locator('.mini-v2-editor-copy-note').first().fill('Green cloak');
+        await page.locator('.mini-v2-copy-select').first().selectOption('Quest Minis');
+        assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '1 / 2');
+        await page.locator('[data-edit-field="notes"]').fill('A new mock group');
+        assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), countBefore);
+        if (process.env.SCREENSHOT_PATH && browseMode === 'groups') await page.screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-creation.png')
+        });
+        await action('save-edit').click();
+        assert.equal(await page.locator('[data-editor-root]').count(), 0);
+        assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), countBefore + (browseMode === 'groups' ? 1 : 2));
+        assert.equal(await page.locator(`tr[data-group-id="${rootId}"]`).count(), browseMode === 'groups' ? 1 : 2);
+        assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 2);
+        assert.match(await page.locator('.mini-v2-detail-tag').first().innerText(), /^Ready$/i);
+        assert.equal(await page.locator('.mini-v2-copy-note-cell').first().innerText(), 'Green cloak');
+      }
+    });
+
+    await check('next sticker is ready immediately from the latest assigned ID, or A00 for an empty collection', async () => {
+      const scanned = JSON.parse(JSON.stringify(data));
+      scanned.groups[0].copies[0].sticker = ' g99 ';
+      scanned.groups[0].copies[1].sticker = 'Z123';
+      scanned.groups.at(-1).copies[0].sticker = 'n/a';
+      for (const browseMode of ['groups', 'individuals']) {
+        await fresh(makeHtml(scanned));
+        await mode(browseMode);
+        await action('new-group').click();
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply H00');
+        assert.equal(await action('apply-next-sticker').isDisabled(), false);
+        await action('apply-next-sticker').click();
+        assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').inputValue(), 'H00');
+        await action('add-copy').click();
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply H01');
+        await action('apply-next-sticker').click();
+        assert.deepEqual(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').evaluateAll(nodes => nodes.map(n => n.value)), ['H00', 'H01']);
+      }
+      const empty = { ...data, groups: [] };
+      await fresh(makeHtml(empty));
+      await action('new-group').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply A00');
+      await action('apply-next-sticker').click();
+      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').inputValue(), 'A00');
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply A01');
+    });
+
+    await check('next sticker remembers saved progress across reload without persisting miniature data or consuming drafts', async () => {
+      const storagePage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+      storagePage.on('pageerror', error => errors.push(error.message));
+      const key = 'ppq-miniature-tracker:mock:next-sticker:v1';
+      const storageAction = name => storagePage.locator(`[data-action="${name}"]`);
+      try {
+        await storagePage.route('https://ppq-sticker.test/**', route => route.fulfill({ contentType: 'text/html', body: html }));
+        await storagePage.goto('https://ppq-sticker.test/');
+        await storageAction('new-group').click();
+        assert.equal(await storageAction('apply-next-sticker').innerText(), 'Apply M08');
+        await storageAction('apply-next-sticker').click();
+        await storageAction('add-copy').click();
+        await storageAction('apply-next-sticker').click();
+        await storagePage.locator('#miniV2EditName').fill('Automatic IDs');
+        await storagePage.locator('[data-edit-field="home"]').selectOption('Spare People');
+        await fillNewDetails({}, storagePage);
+        await storageAction('save-edit').click();
+        assert.equal(await storagePage.evaluate(key => localStorage.getItem(key), key), 'M10');
+        assert.deepEqual(await storagePage.evaluate(() => Object.keys(localStorage)), [key]);
+        await storagePage.reload();
+        assert.equal(await storagePage.locator('.mini-v2-browse-table tbody tr').count(), data.groups.length);
+        await storageAction('new-group').click();
+        assert.equal(await storageAction('apply-next-sticker').innerText(), 'Apply M10');
+        await storageAction('apply-next-sticker').click();
+        await storageAction('close-detail').click();
+        await storagePage.locator(`tr[data-group-id="${soldier}"]`).click();
+        await storageAction('edit-mini').click();
+        await storagePage.locator('[data-edit-field="role"]').selectOption('Ranged');
+        await storageAction('save-edit').click();
+        assert.equal(await storagePage.evaluate(key => localStorage.getItem(key), key), 'M10');
+        storagePage.once('dialog', dialog => dialog.accept());
+        await storagePage.reload();
+        await storageAction('new-group').click();
+        assert.equal(await storageAction('apply-next-sticker').innerText(), 'Apply M10');
+        assert.equal(await storageAction('apply-next-sticker').isDisabled(), false);
+      } finally {
+        await storagePage.close();
+      }
+    });
+
+    await check('next sticker validates remembered IDs and skips collisions, with a collection fallback for bad storage', async () => {
+      const storagePage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+      storagePage.on('pageerror', error => errors.push(error.message));
+      const key = 'ppq-miniature-tracker:mock:next-sticker:v1';
+      const storageAction = name => storagePage.locator(`[data-action="${name}"]`);
+      try {
+        await storagePage.route('https://ppq-sticker.test/**', route => route.fulfill({ contentType: 'text/html', body: html }));
+        await storagePage.goto('https://ppq-sticker.test/');
+        for (const [stored, expected] of [['a97', 'A98'], ['M07', 'M08'], ['a99', 'A99'], ['bad value', 'M08'], ['A100', 'M08'], ['', 'M08']]) {
+          await storagePage.evaluate(({ key, stored }) => localStorage.setItem(key, stored), { key, stored });
+          await storagePage.reload();
+          await storageAction('new-group').click();
+          assert.equal(await storageAction('apply-next-sticker').innerText(), `Apply ${expected}`);
+          assert.equal(await storageAction('apply-next-sticker').isDisabled(), false);
+          if (stored === 'a99') {
+            await storageAction('apply-next-sticker').click();
+            await storageAction('add-copy').click();
+            assert.equal(await storageAction('apply-next-sticker').innerText(), 'Apply B00');
+          }
+          await storageAction('discard-edit').click();
+        }
+        await storagePage.evaluate(key => localStorage.setItem(key, 'end'), key);
+        await storagePage.reload();
+        await storageAction('new-group').click();
+        assert.equal(await storageAction('apply-next-sticker').isDisabled(), true);
+        assert.match(await storageAction('apply-next-sticker').getAttribute('title'), /through Z99/);
+      } finally {
+        await storagePage.close();
+      }
+    });
+
+    await check('next sticker works when embedded-browser storage is blocked', async () => {
+      const blockedPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+      blockedPage.on('pageerror', error => errors.push(error.message));
+      try {
+        await blockedPage.addInitScript(() => Object.defineProperty(window, 'localStorage', {
+          get() { throw new DOMException('Storage blocked', 'SecurityError'); }
+        }));
+        await blockedPage.route('https://ppq-sticker.test/**', route => route.fulfill({ contentType: 'text/html', body: html }));
+        await blockedPage.goto('https://ppq-sticker.test/');
+        await blockedPage.locator('[data-action="new-group"]').click();
+        const apply = blockedPage.locator('[data-action="apply-next-sticker"]');
+        assert.equal(await apply.innerText(), 'Apply M08');
+        await apply.click();
+        await blockedPage.locator('#miniV2EditName').fill('Storage fallback');
+        await blockedPage.locator('[data-edit-field="home"]').selectOption('Spare People');
+        await fillNewDetails({}, blockedPage);
+        await blockedPage.locator('[data-action="save-edit"]').click();
+        await blockedPage.locator('[data-action="edit-mini"]').click();
+        await blockedPage.locator('[data-action="add-copy"]').click();
+        assert.equal(await apply.innerText(), 'Apply M09');
+        assert.equal(await apply.isDisabled(), false);
+      } finally {
+        await blockedPage.close();
+      }
+    });
+
+    await check('next sticker fills the first blank row without adding copies or following individual selection', async () => {
+      for (const browseMode of ['groups', 'individuals']) {
+        await fresh();
+        await mode(browseMode);
+        const browseCount = await page.locator('.mini-v2-browse-table tbody tr').count();
+        await action('new-group').click();
+        assert.equal(await action('apply-next-sticker').isDisabled(), false);
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply M08');
+        await page.locator('#miniV2EditName').fill('Sticker test');
+        await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+        await fillNewDetails();
+        await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('b91');
+        await action('add-copy').click();
+        await action('add-copy').click();
+        const values = () => page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').evaluateAll(nodes => nodes.map(n => n.value));
+        const lastId = await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').last().getAttribute('data-edit-copy-sticker');
+        if (browseMode === 'individuals') {
+          await page.locator(`[data-detail-copy-id="${lastId}"] td`).nth(1).click();
+          assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), lastId);
+        }
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply B92');
+        await action('apply-next-sticker').click();
+        assert.deepEqual(await values(), ['b91', 'B92', '']);
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply B93');
+        if (browseMode === 'individuals') {
+          assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), lastId);
+        }
+        await action('apply-next-sticker').click();
+        assert.deepEqual(await values(), ['b91', 'B92', 'B93']);
+        assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 3);
+        assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), browseCount);
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply B94');
+        assert.equal(await action('apply-next-sticker').isDisabled(), true);
+        await action('apply-next-sticker').evaluate(n => n.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+        assert.deepEqual(await values(), ['b91', 'B92', 'B93']);
+        await action('save-edit').click();
+        await action('edit-mini').click();
+        await action('add-copy').click();
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply B94');
+        await action('apply-next-sticker').click();
+        assert.deepEqual(await values(), ['B94']);
+        assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 4);
+      }
+    });
+
+    await check('next sticker preserves two digits and rolls from 99 to the next letter without passing Z99', async () => {
+      await fresh();
+      await action('new-group').click();
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('e98');
+      for (const code of ['E99', 'F00', 'F01']) {
+        await action('add-copy').click();
+        assert.equal(await action('apply-next-sticker').innerText(), `Apply ${code}`);
+        await action('apply-next-sticker').click();
+        assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').last().inputValue(), code);
+      }
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').first().fill('a99');
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply B00');
+      await action('apply-next-sticker').click();
+      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').last().inputValue(), 'B00');
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').first().fill('Z99');
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').isDisabled(), true);
+      assert.match(await action('apply-next-sticker').getAttribute('title'), /through Z99/);
+      await fresh();
+      await action('new-group').click();
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('n/a');
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').isDisabled(), false);
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply M08');
+    });
+
+    await check('next sticker skips saved, parked and undoable IDs and prevents cross-draft duplicates', async () => {
+      const reserved = JSON.parse(JSON.stringify(data));
+      reserved.groups[1].copies[0].sticker = 'E92';
+      reserved.groups[3].copies[0].sticker = 'e94';
+      await fresh(makeHtml(reserved));
+      await open(reserved.groups[1].rootId);
+      await action('edit-mini').click();
+      await action('delete-group').click();
+      await action('confirm-delete-group').click();
+      await open(soldier);
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('e91');
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E93');
+      await action('apply-next-sticker').click();
+      await action('close-detail').click();
+      await open(fighter);
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E95');
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('e93');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('');
+      await action('apply-next-sticker').click();
+      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').inputValue(), 'E95');
+      await action('close-detail').click();
+      await open(soldier);
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E96');
+      await action('apply-next-sticker').click();
+      await review('undo-delete-group');
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E97');
+      assert.equal(await page.locator('.mini-v2-editor-sticker').first().inputValue(), 'E92');
+    });
+
+    await check('next sticker suggestions do not consume IDs and removed or discarded draft reservations are released', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('G90');
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply G91');
+      await page.locator('[data-edit-field="role"]').selectOption('Ranged');
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply G91');
+      await action('apply-next-sticker').click();
+      const filledId = await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').last().getAttribute('data-edit-copy-sticker');
+      await page.locator(`[data-remove-copy="${filledId}"]`).click();
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply G91');
+      await action('apply-next-sticker').click();
+      await action('close-detail').click();
+      await open(fighter);
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply G92');
+      await action('apply-next-sticker').click();
+      await action('discard-edit').click();
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply G92');
+      await action('apply-next-sticker').click();
+      await action('save-edit').click();
+      await action('close-detail').click();
+      await open(soldier);
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply G93');
+      await action('discard-edit').click();
+      await action('close-detail').click();
+      await open(fighter);
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply G91');
+    });
+
+    await check('next sticker action keeps headers, columns and button positions stable on desktop and mobile', async () => {
+      for (const width of [1440, 1100, 980, 390, 360]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        await action('new-group').click();
+        await settle();
+        const geometry = () => page.locator('#miniV2DetailPanel').evaluate(panel => {
+          const editor = panel.querySelector('.mini-v2-editor').getBoundingClientRect();
+          return {
+            header: panel.querySelector('.mini-v2-detail-header').getBoundingClientRect().height,
+            browseHeader: document.querySelector('.mini-v2-list-header').getBoundingClientRect().height,
+            editorWidth: editor.width, editorHeight: editor.height,
+            columns: [...panel.querySelectorAll('.mini-v2-copy-table th')].map(n => n.getBoundingClientRect().width),
+            buttons: [...panel.querySelectorAll('.mini-v2-copy-edit-actions button')].map(n => {
+              const rect = n.getBoundingClientRect();
+              return { left: rect.left - editor.left, top: rect.top - editor.top, width: rect.width, height: rect.height };
+            })
+          };
+        });
+        const before = await geometry();
+        await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('G00');
+        assert.equal(await action('apply-next-sticker').innerText(), 'Apply G01');
+        assert.deepEqual(await geometry(), before);
+        assert.equal(await page.locator('.mini-v2-copy-edit-actions').evaluate(row => {
+          const rect = row.getBoundingClientRect();
+          return [...row.querySelectorAll('button')].every(n => {
+            const button = n.getBoundingClientRect();
+            return button.left >= rect.left && button.right <= rect.right + 0.1 && n.scrollWidth <= n.clientWidth;
+          });
+        }), true, `copy actions fit at ${width}px`);
+        if (process.env.SCREENSHOT_PATH) await page.locator('#miniV2DetailPanel').screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-next-sticker-${width}.png`)
+        });
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('new drafts survive close, navigation and filters without creating phantom browse entries', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Spellcaster');
+      await action('new-group').click();
+      await page.locator('#miniV2EditName').fill('Draft Ranger');
+      const draftId = await page.locator('[data-editor-root]').getAttribute('data-editor-root');
+      await page.locator('[data-edit-field="home"]').selectOption('Drow');
+      await action('add-copy').click();
+      await page.locator('.mini-v2-editor-copy-note').last().fill('Blue cloak');
+      await action('close-detail').click();
+      await page.locator('#miniV2SearchInput').fill('Archmage');
+      await action('new-group').click();
+      assert.equal(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), draftId);
+      assert.equal(await page.locator('#miniV2EditName').inputValue(), 'Draft Ranger');
+      assert.equal(await page.locator('.mini-v2-editor-copy-note').last().inputValue(), 'Blue cloak');
+      assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), 1);
+      await action('discard-edit').click();
+      assert.equal(await page.locator('#miniV2EditName').inputValue(), 'Zhent Soldier');
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Spellcaster');
+      await action('close-detail').click();
+      await action('new-group').click();
+      assert.notEqual(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), draftId);
+      await page.locator('#miniV2EditName').fill('Hidden New Group');
+      await page.locator('[data-edit-field="home"]').selectOption('Dwarves');
+      await fillNewDetails();
+      await action('save-edit').click();
+      assert.equal(await page.locator('#miniV2SearchInput').inputValue(), 'Archmage');
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Hidden New Group');
+      assert.match(await page.locator('#miniV2DetailContent').innerText(), /outside your current browse filters/);
+    });
+
+    await check('copy additions and removals stay staged, preserve earlier location work and keep stable identities', async () => {
+      await fresh();
+      await open(soldier);
+      await select(firstCopy).selectOption('Quest Minis');
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      const addedId = await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').getAttribute('data-edit-copy-sticker');
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('Z902');
+      await page.locator('.mini-v2-editor-copy-note').last().fill('Purple armor');
+      await page.locator('[data-remove-copy="013-ZHESOL-02"]').click();
+      assert.equal(await page.locator('.mini-v2-copy-row.is-removed').count(), 1);
+      assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '2 / 3');
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"] .mini-v2-count`).innerText(), '3/3');
+      await action('close-detail').click();
+      await open(soldier);
+      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').inputValue(), 'Z902');
+      await action('undo-remove-copy').click();
+      assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '3 / 4');
+      await page.locator('[data-remove-copy="013-ZHESOL-02"]').click();
+      await action('save-edit').click();
+      assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 3);
+      assert.equal(await page.locator('[data-detail-copy-id="013-ZHESOL-02"]').count(), 0);
+      assert.equal(await page.locator(`[data-detail-copy-id="${addedId}"]`).count(), 1);
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"] .mini-v2-count`).innerText(), '2/3');
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      const nextAddedId = await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').getAttribute('data-edit-copy-sticker');
+      assert.notEqual(nextAddedId, addedId);
+      await action('discard-edit').click();
+      assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 3);
+      assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+      await mode('individuals');
+      assert.equal(await page.locator(`.mini-v2-browse-table tr[data-copy-id="${addedId}"]`).count(), 1);
+    });
+
+    await check('new copies inherit Home until explicitly moved and stickers are validated only at Save', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await action('add-copy').click();
+      const sticker = page.locator('.mini-v2-editor-sticker[data-new-copy="true"]');
+      await sticker.fill('a01');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      assert.equal(await sticker.getAttribute('aria-invalid'), 'true');
+      await sticker.fill('Z903');
+      await page.locator('[data-edit-field="home"]').selectOption('Dwarves');
+      assert.equal(await page.locator('.mini-v2-copy-select').last().inputValue(), 'Dwarves');
+      assert.equal(await select(firstCopy).inputValue(), 'Spare People');
+      await page.locator('.mini-v2-copy-select').last().selectOption('Quest Minis');
+      await page.locator('[data-edit-field="home"]').selectOption('Male Humans');
+      assert.equal(await page.locator('.mini-v2-copy-select').last().inputValue(), 'Quest Minis');
+      await action('add-copy').click();
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').last().fill('z903');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').last().fill('');
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      assert.equal(await page.locator('.mini-v2-copy-select').last().inputValue(), 'Spare People');
+      assert.equal(await page.locator('.mini-v2-copy-select').nth(3).inputValue(), 'Quest Minis');
+      assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '4 / 5');
+      await action('save-edit').click();
+      assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 5);
+      assert.equal(await page.locator('.mini-v2-availability-count').innerText(), '4 / 5');
+    });
+
+    await check('the last copy cannot delete a group implicitly and an empty new group cannot be created', async () => {
+      await fresh();
+      await open('086-BREJAG');
+      await action('edit-mini').click();
+      await action('remove-copy').click();
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /at least one copy.*Delete group/);
+      assert.equal(await page.locator('.mini-v2-copy-row.is-removed').count(), 0);
+      await action('new-group').click();
+      await page.locator('#miniV2EditName').fill('No Copies');
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await fillNewDetails();
+      await action('remove-copy').click();
+      assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 0);
+      assert.equal(await action('save-edit').isDisabled(), true);
+      assert.match(await action('save-edit').getAttribute('title'), /at least one copy/);
+      await action('add-copy').click();
+      assert.equal(await action('save-edit').isDisabled(), false);
+      await action('save-edit').click();
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'No Copies');
+    });
+
+    await check('Create Group enables only for a valid draft and follows edits, copies, duplicates and draft recovery', async () => {
+      await fresh();
+      await action('new-group').click();
+      const create = action('save-edit');
+      assert.equal(await create.isDisabled(), true);
+      await page.locator('#miniV2EditName').fill('Valid Draft');
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await fillNewDetails();
+      assert.equal(await create.isDisabled(), false);
+      await page.locator('#miniV2EditName').fill('   ');
+      assert.equal(await create.isDisabled(), true);
+      await page.locator('#miniV2EditName').fill('Valid Draft');
+      assert.equal(await create.isDisabled(), false);
+      await page.locator('[data-edit-field="home"]').selectOption('');
+      assert.equal(await create.isDisabled(), true);
+      await page.locator('.mini-v2-copy-select').selectOption('__RETURN_HOME__');
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      assert.equal(await create.isDisabled(), true);
+      assert.match(await create.getAttribute('title'), /current location/);
+      await page.locator('.mini-v2-copy-select').selectOption('Spare People');
+      assert.equal(await create.isDisabled(), false);
+      const sticker = page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').first();
+      await sticker.fill('a12');
+      assert.equal(await create.isDisabled(), true);
+      assert.match(await create.getAttribute('title'), /already assigned/);
+      await create.evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), 9);
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      await sticker.fill('Z910');
+      assert.equal(await create.isDisabled(), false);
+      await action('add-copy').click();
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').last().fill('z910');
+      assert.equal(await create.isDisabled(), true);
+      await action('close-detail').click();
+      await action('new-group').click();
+      assert.equal(await create.isDisabled(), true);
+      await page.locator('.mini-v2-remove-copy').last().click();
+      assert.equal(await create.isDisabled(), false);
+      await page.locator('[data-edit-field="set"]').selectOption('Lords of Madness');
+      await page.locator('[data-edit-field="setNumber"]').fill('abc');
+      assert.equal(await create.isDisabled(), true);
+      assert.match(await create.getAttribute('title'), /starting with a digit/);
+      await page.locator('[data-edit-field="setNumber"]').fill('');
+      await page.locator('[data-edit-field="set"]').selectOption('n/a');
+      assert.equal(await create.isDisabled(), false);
+      await sticker.fill('');
+      assert.equal(await create.isDisabled(), false);
+      await page.locator('[data-edit-field="set"]').selectOption('n/a');
+      assert.equal(await create.isDisabled(), false);
+      await create.click();
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Valid Draft');
+    });
+
+    await check('blank choices are distinct from explicit Not specified and block creation until answered', async () => {
+      await fresh();
+      await action('new-group').click();
+      const create = action('save-edit');
+      const labels = { size: 'Size', creatureType: 'Creature Type', race: 'Race', sex: 'Sex', role: 'Role', set: 'Set', paint: 'Paint' };
+      for (const key of [...Object.keys(labels), 'home']) {
+        const field = page.locator(`[data-edit-field="${key}"]`);
+        assert.equal(await field.inputValue(), '');
+        assert.equal(await field.evaluate(n => n.selectedOptions[0].textContent), '');
+        assert.equal(await field.locator('option[value="Not specified"]').count(), ['home', 'paint'].includes(key) ? 0 : 1);
+      }
+      await page.locator('#miniV2EditName').fill('Unknown Character');
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      assert.equal(await create.isDisabled(), true);
+      await fillNewDetails(Object.fromEntries(Object.keys(labels).map(key => [key, key === 'paint' ? 'Painted' : 'Not specified'])));
+      assert.equal(await create.isDisabled(), false);
+      for (const [key, label] of Object.entries(labels)) {
+        const field = page.locator(`[data-edit-field="${key}"]`);
+        await field.focus();
+        await field.selectOption('');
+        assert.equal(await create.isDisabled(), true);
+        assert.ok((await create.getAttribute('title')).includes(`Choose ${label}`));
+        await create.evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+        assert.equal(await field.getAttribute('aria-invalid'), 'true', `${label} blank validation`);
+        assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), 9);
+        await field.selectOption(key === 'paint' ? 'Painted' : 'Not specified');
+        assert.equal(await field.getAttribute('aria-invalid'), null);
+        assert.equal(await create.isDisabled(), false);
+      }
+      const set = page.locator('[data-edit-field="set"]');
+      const number = page.locator('[data-edit-field="setNumber"]');
+      await set.selectOption('Lords of Madness');
+      assert.equal(await create.isDisabled(), true);
+      assert.match(await create.getAttribute('title'), /Enter Set #/);
+      await number.fill('40');
+      assert.equal(await create.isDisabled(), false);
+      await number.fill('');
+      assert.equal(await create.isDisabled(), true);
+      await set.selectOption('n/a');
+      assert.equal(await create.isDisabled(), false);
+      await set.selectOption('Not specified');
+      assert.equal(await create.isDisabled(), false);
+      await action('close-detail').click();
+      await action('new-group').click();
+      assert.equal(await create.isDisabled(), false);
+      for (const key of Object.keys(labels)) {
+        assert.equal(await page.locator(`[data-edit-field="${key}"]`).inputValue(), key === 'paint' ? 'Painted' : 'Not specified');
+      }
+      await page.locator('[data-edit-field="notes"]').fill('The character details are unknown.');
+      await create.click();
+      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+      assert.equal(await page.locator('.mini-v2-set-field .mini-v2-read-value').innerText(), 'Not specified');
+      await action('edit-mini').click();
+      for (const key of Object.keys(labels)) {
+        assert.equal(await page.locator(`[data-edit-field="${key}"]`).inputValue(), key === 'paint' ? 'Painted' : 'Not specified');
+      }
+      await page.locator('[data-edit-field="race"]').selectOption('');
+      await action('save-edit').click();
+      assert.equal(await page.locator('#miniV2DetailHeaderTags .mini-v2-detail-tag').getAttribute('title'), 'Missing: Race');
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), '');
+      assert.equal(await page.locator('[data-edit-field="race"]').evaluate(n => n.selectedOptions[0].textContent), '');
+    });
+
+    await check('group deletion is explicit and Undo restores identity, copies, pending moves and the editor draft', async () => {
+      await fresh();
+      await open(soldier);
+      await select(firstCopy).selectOption('Quest Minis');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="role"]').selectOption('Spellcaster');
+      await action('add-copy').click();
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('Z904');
+      await action('delete-group').click();
+      assert.match(await page.locator('.mini-v2-delete-confirm').innerText(), /Zhent Soldier and all 3 copies/);
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('.mini-v2-delete-confirm').isVisible(), false);
+      assert.equal(await page.locator('[data-editor-root]').count(), 1);
+      await action('delete-group').click();
+      await action('cancel-delete-group').click();
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"]`).count(), 1);
+      await action('delete-group').click();
+      if (process.env.SCREENSHOT_PATH) await page.screenshot({
+        path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-delete-confirmation.png')
+      });
+      await action('confirm-delete-group').click();
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"]`).count(), 0);
+      await review('undo-delete-group');
+      assert.equal(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), soldier);
+      assert.equal(await page.locator('[data-edit-field="role"]').inputValue(), 'Spellcaster');
+      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').inputValue(), 'Z904');
+      assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"] .mini-v2-count`).innerText(), '3/3');
+      await action('discard-edit').click();
+      assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+      assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 3);
+    });
+
+    await check('copy controls preserve all four columns through editing, additions, removals and narrow scrolling', async () => {
+      for (const width of [1440, 1100, 980, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh();
+        await open(fighter);
+        const columns = () => page.locator('.mini-v2-copy-table th').evaluateAll(nodes => nodes.map(n => n.getBoundingClientRect().width));
+        const before = await columns();
+        await action('edit-mini').click();
+        assert.deepEqual(await columns(), before);
+        await action('add-copy').click();
+        await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('Z905');
+        assert.deepEqual(await columns(), before);
+        assert.equal(await page.locator('.mini-v2-copy-note-editor').evaluateAll(nodes => nodes.every(node => {
+          const cell = node.closest('td').getBoundingClientRect();
+          const button = node.querySelector('button').getBoundingClientRect();
+          const input = node.querySelector('input').getBoundingClientRect();
+          return button.right <= cell.right && input.right <= button.left && input.width > 50;
+        })), true);
+        await page.locator('[data-remove-copy="048-SPIFOLFIG-01"]').click();
+        assert.deepEqual(await columns(), before);
+        await action('undo-remove-copy').click();
+        assert.deepEqual(await columns(), before);
+        assert.equal(await page.locator('.mini-v2-editor-sticker').evaluateAll(nodes => nodes.every(n => {
+          const style = getComputedStyle(n);
+          const text = document.createElement('canvas').getContext('2d');
+          text.font = style.font;
+          return n.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) >= text.measureText('A12').width;
+        })), true);
+        assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+        if (process.env.SCREENSHOT_PATH) await page.screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-copy-controls-${width}.png`)
+        });
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('long individual and group notes use slow pause-scroll-pause-reset without altering layout', async () => {
+      const longNotes = JSON.parse(JSON.stringify(data));
+      const note = 'Purple and green variant <not markup>; blue cloak and silver trim. '.repeat(15);
+      const notes = 'Painting and collection notes <keep as text>.\n'.repeat(24);
+      longNotes.groups[0].copies[0].note = note;
+      longNotes.groups[0].copies[1].note = 'Blue cloak';
+      longNotes.groups[0].notes = notes;
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await fresh();
+        await open(soldier);
+        const geometry = () => page.locator('#miniV2DetailContent').evaluate(panel => ({
+          rows: [...panel.querySelectorAll('.mini-v2-copy-row')].map(n => n.getBoundingClientRect().height),
+          noteHeight: panel.querySelector('.mini-v2-note-body').getBoundingClientRect().height,
+          noteMargin: getComputedStyle(panel.querySelector('.mini-v2-note-body')).marginTop
+        }));
+        const before = await geometry();
+        await fresh(makeHtml(longNotes));
+        await page.locator(`tr[data-group-id="${soldier}"]`).click();
+        assert.deepEqual(await geometry(), before);
+        await settle();
+        assert.deepEqual(await geometry(), before);
+        const values = page.locator('.mini-v2-copy-note-value');
+        assert.equal(await values.first().locator('.mini-v2-marquee-text').textContent(), note);
+        assert.equal(await page.locator('.mini-v2-note-body .mini-v2-marquee-text').textContent(), notes);
+        assert.equal(await page.locator('.mini-v2-note-body').getAttribute('title'), notes);
+        assert.equal(await page.locator('.mini-v2-copy-note-cell').first().getAttribute('title'), note);
+        assert.equal(await values.first().evaluate(n => !!n._miniV2MarqueeAnimation), true);
+        assert.equal(await values.nth(1).evaluate(n => !!n._miniV2MarqueeAnimation), false);
+        assert.equal(await values.first().evaluate(n => {
+          const cell = getComputedStyle(n.closest('td'));
+          const value = getComputedStyle(n);
+          return cell.fontSize === value.fontSize && cell.fontWeight === value.fontWeight
+            && cell.lineHeight === value.lineHeight && value.marginTop === '0px';
+        }), true);
+        const cycle = await values.first().evaluate(node => {
+          const animation = node._miniV2MarqueeAnimation;
+          const timing = animation.effect.getTiming();
+          const frames = animation.effect.getKeyframes();
+          const overflow = Math.ceil(node.querySelector('.mini-v2-marquee-text').scrollWidth - node.clientWidth);
+          animation.pause();
+          const sample = time => {
+            animation.currentTime = time;
+            return new DOMMatrixReadOnly(getComputedStyle(node.querySelector('.mini-v2-marquee-text')).transform).m41;
+          };
+          return { duration: timing.duration, iterations: timing.iterations === Infinity, easing: timing.easing,
+            direction: timing.direction, overflow, startPause: frames[1].offset * timing.duration,
+            endPause: (1 - frames[2].offset) * timing.duration,
+            start: sample(1000), middle: sample(timing.duration / 2),
+            end: sample(timing.duration - 1000), reset: sample(timing.duration + 1000) };
+        });
+        assert.equal(cycle.iterations, true);
+        assert.equal(cycle.easing, 'linear');
+        assert.equal(cycle.direction, 'normal');
+        assert.ok(Math.abs(cycle.startPause - 2000) < 1 && Math.abs(cycle.endPause - 2000) < 1);
+        assert.ok(Math.abs((cycle.duration - 4000) / 1000 - Math.max(4, cycle.overflow / 22)) < 0.01);
+        assert.ok(cycle.duration > 14000, 'long notes must not speed up to meet a ten-second travel cap');
+        assert.ok(Math.abs(cycle.start) < 1 && Math.abs(cycle.reset) < 1);
+        assert.ok(Math.abs(cycle.middle + cycle.overflow / 2) < 1);
+        assert.ok(Math.abs(cycle.end + cycle.overflow) < 1);
+        assert.deepEqual(await geometry(), before);
+        if (process.env.SCREENSHOT_PATH) await page.locator('#miniV2DetailPanel').screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-note-marquees-${width}.png`)
+        });
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await settle();
+        assert.equal(await page.locator('.mini-v2-marquee-value').evaluateAll(nodes => nodes.every(n => !n._miniV2MarqueeAnimation)), true);
+        assert.deepEqual(await geometry(), before);
+        await action('edit-mini').click();
+        assert.equal(await page.locator('.mini-v2-editor .mini-v2-marquee-value').count(), 0);
+        assert.equal(await page.locator('[data-edit-copy-note="013-ZHESOL-01"]').inputValue(), note);
+        assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), notes);
+        await page.locator('[data-edit-copy-note="013-ZHESOL-01"]').fill('Short note');
+        await action('save-edit').click();
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await settle();
+        assert.equal(await values.first().evaluate(n => !!n._miniV2MarqueeAnimation), false);
+        assert.equal(await page.locator('.mini-v2-note-body').evaluate(n => !!n._miniV2MarqueeAnimation), true);
+        assert.deepEqual(await geometry(), before);
+        assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('an empty new-group draft reopens in creation mode and actually publishes after recovery', async () => {
+      await fresh();
+      await action('new-group').click();
+      const rootId = await page.locator('[data-editor-root]').getAttribute('data-editor-root');
+      await page.locator('[data-remove-copy]').click();
+      assert.equal(await action('save-edit').isDisabled(), true);
+      await action('close-detail').click();
+      await action('new-group').click();
+      assert.equal(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), rootId);
+      assert.equal(await action('save-edit').innerText(), 'Create Group');
+      assert.equal(await action('save-edit').isDisabled(), true);
+      await action('close-detail').click();
+      await open(soldier);
+      await review('review-editor-drafts');
+      assert.equal(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), rootId);
+      await page.locator('#miniV2EditName').fill('Recovered empty draft');
+      await fillNewDetails();
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await action('add-copy').click();
+      await action('save-edit').click();
+      assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), data.groups.length + 1);
+      assert.equal(await page.locator(`tr[data-group-id="${rootId}"]`).count(), 1);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').innerText(), 'Recovered empty draft');
+      await action('new-group').click();
+      await page.locator('[data-remove-copy]').click();
+      await action('close-detail').click();
+      await action('new-group').click();
+      const discarded = await page.locator('[data-editor-root]').getAttribute('data-editor-root');
+      await action('discard-edit').click();
+      await action('new-group').click();
+      assert.notEqual(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), discarded);
+    });
+
+    await check('existing sticker blanks accept Apply in table order, retain drafts and update search only on Save', async () => {
+      await fresh();
+      const drow = data.groups.find(group => group.rootId === '121-DRORAN');
+      const sticker = id => page.locator(`[data-edit-copy-sticker="${id}"]`);
+      await open(drow.rootId);
+      await action('edit-mini').click();
+      const inputs = page.locator('.mini-v2-editor-sticker');
+      assert.equal(await inputs.count(), 2);
+      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').count(), 0);
+      await action('apply-next-sticker').click();
+      await action('apply-next-sticker').click();
+      assert.deepEqual(await inputs.evaluateAll(nodes => nodes.map(n => n.value)), ['M08', 'M09']);
+      assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 2);
+      await action('close-detail').click();
+      await page.locator('#miniV2SearchInput').fill('M08');
+      assert.equal(await page.locator(`tr[data-group-id="${drow.rootId}"]`).count(), 0);
+      await page.locator('#miniV2SearchInput').fill('');
+      await open(drow.rootId);
+      assert.equal(await sticker(drow.copies[0].id).inputValue(), 'M08');
+      await action('discard-edit').click();
+      await action('edit-mini').click();
+      assert.deepEqual(await inputs.evaluateAll(nodes => nodes.map(n => n.value)), ['', '']);
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply M08');
+      await action('apply-next-sticker').click();
+      await action('apply-next-sticker').click();
+      await action('save-edit').click();
+      await page.locator('#miniV2SearchInput').fill('m08');
+      assert.equal(await page.locator(`tr[data-group-id="${drow.rootId}"]`).count(), 1);
+      assert.deepEqual(await page.locator('[data-detail-copy-id]').evaluateAll(rows => rows.map(row => row.dataset.detailCopyId)), Array.from(drow.copies, copy => copy.id));
+      assert.match(await page.locator('.mini-v2-summary-desktop [data-collection-view="missing"]').innerText(), /0/);
+    });
+
+    await check('existing sticker validation catches unchanged siblings and other groups but allows swaps and n/a', async () => {
+      await fresh();
+      const ids = data.groups.find(group => group.rootId === soldier).copies.map(copy => copy.id);
+      const sticker = id => page.locator(`[data-edit-copy-sticker="${id}"]`);
+      await open(soldier);
+      await action('edit-mini').click();
+      await sticker(ids[0]).fill('a55');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      assert.equal(await sticker(ids[0]).getAttribute('aria-invalid'), 'true');
+      await sticker(ids[0]).fill('a97');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      await sticker(ids[0]).fill('A55');
+      await sticker(ids[1]).fill('A12');
+      await action('save-edit').click();
+      assert.equal(await page.locator(`[data-detail-copy-id="${ids[0]}"] td`).first().innerText(), 'A55');
+      assert.equal(await page.locator(`[data-detail-copy-id="${ids[1]}"] td`).first().innerText(), 'A12');
+      await action('edit-mini').click();
+      await sticker(ids[0]).fill('n/a');
+      await sticker(ids[1]).fill('N/A');
+      await sticker(ids[2]).fill('');
+      await action('save-edit').click();
+      assert.equal(await action('edit-mini').isVisible(), true);
+      assert.match(await page.locator('.mini-v2-summary-desktop [data-collection-view="missing"]').innerText(), /3/);
+      const legacy = JSON.parse(JSON.stringify(data));
+      legacy.groups[0].copies[1].sticker = legacy.groups[0].copies[0].sticker;
+      await fresh(makeHtml(legacy));
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="notes"]').fill('Unrelated legacy edit');
+      await action('save-edit').click();
+      assert.equal(await action('edit-mini').isVisible(), true, 'untouched legacy duplicates must not block unrelated corrections');
+    });
+
+    await check('existing sticker corrections reserve saved and draft IDs through close and deletion undo', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator(`[data-edit-copy-sticker="${firstCopy}"]`).fill('G90');
+      await action('close-detail').click();
+      await open(fighter);
+      await action('edit-mini').click();
+      const fighterSticker = page.locator('.mini-v2-editor-sticker').first();
+      for (const code of ['G90', 'A12']) {
+        await fighterSticker.fill(code);
+        await action('save-edit').click();
+        assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      }
+      await action('discard-edit').click();
+      await open(soldier);
+      await action('delete-group').click();
+      await action('confirm-delete-group').click();
+      await open(fighter);
+      await action('edit-mini').click();
+      for (const code of ['G90', 'A12']) {
+        await fighterSticker.fill(code);
+        await action('save-edit').click();
+        assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+      }
+      await action('discard-edit').click();
+      await review('undo-delete-group');
+      assert.equal(await page.locator(`[data-edit-copy-sticker="${firstCopy}"]`).inputValue(), 'G90');
+      await action('save-edit').click();
+      await open(fighter);
+      await action('edit-mini').click();
+      await fighterSticker.fill('A12');
+      await action('save-edit').click();
+      assert.equal(await action('edit-mini').isVisible(), true, 'the old ID is released only after the correction is saved');
+    });
+
+    await check('discarding or removing a sequence edit cannot strand the next-ID action at Z99', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator(`[data-edit-copy-sticker="${firstCopy}"]`).fill('Z99');
+      assert.equal(await action('apply-next-sticker').isDisabled(), true);
+      await action('discard-edit').click();
+      await action('new-group').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply M08');
+      const added = page.locator('.mini-v2-editor-sticker[data-new-copy="true"]');
+      await added.fill('Z99');
+      await page.locator('[data-remove-copy]').click();
+      await action('add-copy').click();
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply M08');
+      await added.fill('Z99');
+      await added.fill('');
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply M08');
+      await action('apply-next-sticker').click();
+      assert.equal(await added.inputValue(), 'M08');
+    });
+
+    await check('saving unrelated metadata cannot persist a parked draft sequence preference', async () => {
+      const storagePage = await browser.newPage();
+      storagePage.on('pageerror', error => errors.push(error.message));
+      const key = 'ppq-miniature-tracker:mock:next-sticker:v1';
+      const act = name => storagePage.locator(`[data-action="${name}"]`);
+      try {
+        await storagePage.route('https://ppq-draft-sequence.test/**', route => route.fulfill({ contentType: 'text/html', body: html }));
+        await storagePage.goto('https://ppq-draft-sequence.test/');
+        await act('new-group').click();
+        await storagePage.locator('.mini-v2-editor-sticker').fill('Z99');
+        await act('close-detail').click();
+        await storagePage.locator(`tr[data-group-id="${soldier}"]`).click();
+        await act('edit-mini').click();
+        await storagePage.locator('[data-edit-field="notes"]').fill('Unrelated saved change');
+        await act('save-edit').click();
+        assert.equal(await storagePage.evaluate(key => localStorage.getItem(key), key), 'M08');
+        await act('new-group').click();
+        await act('discard-edit').click();
+        await storagePage.reload();
+        await act('new-group').click();
+        assert.equal(await act('apply-next-sticker').innerText(), 'Apply M08');
+      } finally {
+        await storagePage.close();
+      }
+    });
+
+    await check('Set numbers accept suffixes and n/a disables stale numbers without losing an uncommitted selection', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      const set = page.locator('[data-edit-field="set"]');
+      const number = page.locator('[data-edit-field="setNumber"]');
+      await number.fill('4a');
+      await action('save-edit').click();
+      assert.match(await page.locator('.mini-v2-set-field').innerText(), /Lords of Madness \(4a\)/);
+      await action('edit-mini').click();
+      await number.fill('5b');
+      await set.selectOption('n/a');
+      assert.equal(await number.isDisabled(), true);
+      assert.equal(await number.inputValue(), '');
+      await set.selectOption('Lords of Madness');
+      assert.equal(await number.isDisabled(), false);
+      assert.equal(await number.inputValue(), '5b');
+      await action('save-edit').click();
+      assert.match(await page.locator('.mini-v2-set-field').innerText(), /\(5b\)/);
+      await action('edit-mini').click();
+      await set.selectOption('n/a');
+      await action('save-edit').click();
+      assert.match(await page.locator('.mini-v2-set-field').innerText(), /n\/a/);
+      assert.doesNotMatch(await page.locator('.mini-v2-set-field').innerText(), /5b/);
+      await action('edit-mini').click();
+      await set.selectOption('Lords of Madness');
+      assert.equal(await number.inputValue(), '');
+      await action('new-group').click();
+      await page.locator('#miniV2EditName').fill('Variant number');
+      await fillNewDetails({ set: 'Lords of Madness' });
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await number.fill('4a');
+      assert.equal(await action('save-edit').isDisabled(), false);
+      await action('save-edit').click();
+      assert.match(await page.locator('.mini-v2-set-field').innerText(), /\(4a\)/);
+    });
+
+    await check('valid paint cannot be cleared and optional Notes never lower readiness', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="paint"]').selectOption('');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /Choose Paint/);
+      await action('discard-edit').click();
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="paint"]').inputValue(), 'Painted');
+      await page.locator('[data-edit-field="notes"]').fill('');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+      await action('new-group').click();
+      await page.locator('#miniV2EditName').fill('No optional notes');
+      await fillNewDetails();
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await action('save-edit').click();
+      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+    });
+
+    await check('small-screen selections and draft recovery reveal the inspector without scrolling during editing', async () => {
+      const large = JSON.parse(JSON.stringify(data));
+      const base = large.groups[0];
+      large.groups = Array.from({ length: 100 }, (_, i) => ({ ...base, rootId: `mobile-${i}`, name: `Miniature ${i}`,
+        copies: base.copies.map((copy, j) => ({ ...copy, id: `mobile-${i}-${j}` })) }));
+      for (const width of [390, 820]) {
+        await page.setViewportSize({ width, height: 844 });
+        await fresh(makeHtml(large));
+        await open('mobile-0');
+        const assertHeaderVisible = async () => {
+          const box = await page.locator('.mini-v2-detail-header').boundingBox();
+          assert.ok(box.y >= -1 && box.y + box.height < 844, `inspector header must be visible at ${width}px, not y=${box.y}`);
+        };
+        await assertHeaderVisible();
+        if (process.env.SCREENSHOT_PATH) await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-mobile-reveal-${width}.png`) });
+        await action('edit-mini').click();
+        await page.locator('[data-edit-field="notes"]').fill('Retain mobile draft');
+        const bodyTop = await page.evaluate(() => document.body.scrollTop);
+        await page.locator('[data-edit-field="notes"]').press('End');
+        await page.keyboard.type('!');
+        await settle();
+        assert.equal(await page.evaluate(() => document.body.scrollTop), bodyTop);
+        await action('close-detail').click();
+        await review('review-editor-drafts');
+        await settle();
+        await assertHeaderVisible();
+        assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Retain mobile draft!');
+        await action('new-group').click();
+        await settle();
+        await assertHeaderVisible();
+        assert.equal(await action('save-edit').innerText(), 'Create Group');
+        await action('new-group').click();
+        await settle();
+        await assertHeaderVisible();
+        assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
     });
 
     await check('marquee honors reduced motion without changing card height', async () => {
@@ -1037,6 +2717,7 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await page.evaluate(() => document.getAnimations().filter(a => a.effect.target.classList.contains('mini-v2-marquee-text')).length), 0);
       assert.equal(await card.evaluate(n => n.clientHeight), height);
     });
+    assert.ok(checksRun > 0, 'TEST_FILTER must match at least one scenario');
     assert.deepEqual(errors, []);
     console.log('PASS no browser script errors');
     if (process.env.SCREENSHOT_PATH) await page.screenshot({ path: process.env.SCREENSHOT_PATH });
