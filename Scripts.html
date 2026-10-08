@@ -64,12 +64,24 @@
 
     const EDIT_FIELDS = ["name", "size", "creatureType", "race", "sex", "role", "set", "setNumber", "home", "paint", "notes"];
     const UNSPECIFIED_VALUE = "Not specified";
+    const MISSING_VALUE_LABEL = "Not entered";
     const FACET_FIELDS = { sizes: "size", creatureTypes: "creatureType", races: "race", sexes: "sex", roles: "role" };
     Object.entries(FACET_FIELDS).forEach(([kind, field]) => {
       if (Array.isArray(INITIAL_STATE.catalogs?.[field])) FILTER_OPTIONS[kind] = INITIAL_STATE.catalogs[field].slice();
     });
-    const PAINT_OPTIONS = ["Painted", "Unpainted", "Work in Progress"];
+    const PAINT_OPTIONS = (INITIAL_STATE.catalogs?.paint || ["Painted", "Unpainted", "Work in Progress"]).slice();
+    const LIST_DEFINITIONS = [
+      { key: "size", label: "Size", title: "Sizes", kind: "sizes" },
+      { key: "creatureType", label: "Creature Type", title: "Creature Types", kind: "creatureTypes" },
+      { key: "race", label: "Race", title: "Races", kind: "races" },
+      { key: "sex", label: "Sex", title: "Sex", kind: "sexes" },
+      { key: "role", label: "Role", title: "Roles", kind: "roles" },
+      { key: "set", label: "Set", title: "Sets" },
+      { key: "paint", label: "Paint", title: "Paint Status" },
+      { key: "locations", label: "Locations", title: "Locations" }
+    ];
     const STICKER_FILTER_OPTIONS = ["Assigned", "Missing"];
+    const RECORD_STATUS_OPTIONS = ["Complete", "Incomplete"];
     const EDIT_REQUIRED_CHOICES = {
       size: "Size", creatureType: "Creature Type", race: "Race", sex: "Sex", role: "Role", set: "Set", paint: "Paint"
     };
@@ -79,7 +91,7 @@
       groups: INITIAL_STATE.groups.map((group, index) => enrichGroup({ ...group, originalOrder: index })),
       locations: INITIAL_STATE.locations.slice(),
       homeLocations: (INITIAL_STATE.homeLocations || INITIAL_STATE.locations).slice(),
-      sets: Array.from(new Set(INITIAL_STATE.catalogs?.set || INITIAL_STATE.groups.map(group => group.set).filter(Boolean))).sort(compareText),
+      sets: Array.from(new Set(INITIAL_STATE.catalogs?.set || INITIAL_STATE.groups.map(group => group.set).filter(hasMeaningfulValue))).sort(compareText),
       browseMode: "groups",
       browseScroll: { groups: null, individuals: null },
       collectionView: "",
@@ -108,8 +120,22 @@
       nextMockId: 1,
       detailPointerDownInside: false
     };
+    const listManager = { key: "set", query: "", forms: Object.create(null), undo: [], notice: "",
+      catalogs: Object.create(null), nextId: 1, pageStyles: null };
+    LIST_DEFINITIONS.forEach(definition => {
+      const values = definition.kind ? FILTER_OPTIONS[definition.kind]
+        : definition.key === "set" ? state.sets : definition.key === "paint" ? PAINT_OPTIONS
+          : [...state.locations, ...state.homeLocations];
+      const choices = definition.kind || definition.key === "set" ? [...values, UNSPECIFIED_VALUE] : values;
+      listManager.catalogs[definition.key] = [...new Set(choices)].map(value => ({
+        id: `choice-${listManager.nextId++}`, value, hidden: false,
+        home: definition.key === "locations" && state.homeLocations.includes(value),
+        locked: ["n/a", UNSPECIFIED_VALUE.toLowerCase()].includes(value.toLowerCase())
+      }));
+    });
 
     let root;
+    let listDialogNode;
     let workspaceNode;
     let summaryLaneNode;
     let summaryMarkup = "";
@@ -134,6 +160,9 @@
     let detailStageNode;
     let detailHeaderTitleNode;
     let detailHeaderTagsNode;
+    let detailStatusTipNode;
+    let detailStatusTipPinned = false;
+    let detailStatusTipHideTimer = null;
     let detailCloseButtonNode;
     let detailScrollNode;
     let detailEmptyNode;
@@ -155,11 +184,18 @@
       renderAll();
       syncDesktopLayoutMetrics();
       bindEvents();
-      window.addEventListener("resize", () => syncDesktopLayoutMetrics());
+      window.addEventListener("resize", () => {
+        hideDetailStatusTip();
+        syncDesktopLayoutMetrics();
+      });
       new ResizeObserver(() => syncDesktopLayoutMetrics()).observe(workspaceNode);
       reducedMotionMq.addEventListener("change", () => scheduleDetailMarqueeSync(0));
       window.addEventListener("beforeunload", event => {
-        if (!editorDraftIds().length && !state.groups.some(group => group.copies.some(isDirty))) return;
+        if (!editorDraftIds().length && !state.groups.some(group => group.copies.some(isDirty))
+          && !Object.entries(listManager.forms).some(([key, form]) => {
+            const choice = listManager.catalogs[key].find(item => item.id === form.id);
+            return form.mode !== "remove" && (choice ? form.name !== choice.value || form.home !== choice.home : !!form.name.trim());
+          })) return;
         event.preventDefault();
         event.returnValue = "";
       });
@@ -181,6 +217,32 @@
             </div>
           </section>
 
+          <dialog id="miniV2ListsDialog" class="mini-v2-lists-dialog" aria-labelledby="miniV2ListsTitle"
+            aria-describedby="miniV2ListsScope">
+            <div class="mini-v2-lists-header">
+              <h2 id="miniV2ListsTitle">Manage Lists</h2>
+              <button type="button" class="button mini-v2-copy-btn" data-list-action="close">Done</button>
+            </div>
+            <div class="mini-v2-lists-body">
+              <nav class="mini-v2-lists-nav" aria-label="Dropdown lists"></nav>
+              <div class="mini-v2-lists-content">
+                <label class="mini-v2-lists-mobile-picker">List<select id="miniV2ListsPicker"></select></label>
+                <div class="mini-v2-lists-toolbar">
+                  <div><h3 id="miniV2ListsHeading"></h3><p id="miniV2ListsCount"></p></div>
+                  <button type="button" class="button mini-v2-copy-btn mini-v2-secondary" data-list-action="add">+ Add</button>
+                </div>
+                <input id="miniV2ListsSearch" class="mini-v2-lists-input" type="search" placeholder="Search choices..." aria-label="Search list choices">
+                <div id="miniV2ListsForm" hidden></div>
+                <div id="miniV2ListsRows" class="mini-v2-lists-rows" role="region" aria-labelledby="miniV2ListsHeading" tabindex="0"></div>
+              </div>
+            </div>
+            <div class="mini-v2-lists-footer">
+              <div><p id="miniV2ListsNotice" role="status" aria-live="polite"></p>
+                <p id="miniV2ListsScope">Preview only. List changes reset on reload.</p></div>
+              <button type="button" class="button mini-v2-copy-btn" data-list-action="undo" hidden>Undo removal</button>
+            </div>
+          </dialog>
+          <div id="miniV2DetailStatusTip" class="mini-v2-detail-status-tip" role="tooltip" hidden></div>
           <div class="mini-v2-workspace">
             <section class="v2-card mini-v2-table-card">
               <div id="miniV2ListStage" class="mini-v2-list-stage">
@@ -262,7 +324,7 @@
               <div id="miniV2DetailStage" class="mini-v2-detail-stage">
                 <div class="v2-card-header mini-v2-detail-header">
                   <div class="mini-v2-detail-header-main">
-                    <span id="miniV2DetailHeaderTitle">Mini Details</span>
+                    <span id="miniV2DetailHeaderTitle" class="mini-v2-marquee-value"><span class="mini-v2-marquee-track"><span class="mini-v2-marquee-text">Mini Details</span></span></span>
                     <input id="miniV2EditName" class="mini-v2-editor-name" data-edit-field="name" aria-label="Miniature name" hidden>
                     <div id="miniV2DetailHeaderTags" class="mini-v2-detail-tag-row"></div>
                   </div>
@@ -286,6 +348,7 @@
 
     function bindNodes() {
       root = document.getElementById("miniV2Root");
+      listDialogNode = document.getElementById("miniV2ListsDialog");
       workspaceNode = root.querySelector(".mini-v2-workspace");
       summaryLaneNode = document.getElementById("miniV2SummaryLane");
       listHeaderNoteNode = document.getElementById("miniV2ListHeaderNote");
@@ -311,6 +374,7 @@
       detailStageNode = document.getElementById("miniV2DetailStage");
       detailHeaderTitleNode = document.getElementById("miniV2DetailHeaderTitle");
       detailHeaderTagsNode = document.getElementById("miniV2DetailHeaderTags");
+      detailStatusTipNode = document.getElementById("miniV2DetailStatusTip");
       detailCloseButtonNode = document.getElementById("miniV2DetailCloseButton");
       detailScrollNode = document.getElementById("miniV2DetailScroll");
       detailEmptyNode = document.getElementById("miniV2DetailEmpty");
@@ -318,15 +382,46 @@
     }
 
     function bindEvents() {
+      listDialogNode.addEventListener("cancel", event => { event.preventDefault(); closeListManager(); });
+      listDialogNode.addEventListener("click", handleListManagerClick);
+      listDialogNode.addEventListener("input", handleListManagerInput);
+      listDialogNode.addEventListener("change", handleListManagerInput);
+      listDialogNode.addEventListener("keydown", event => {
+        event.stopPropagation();
+        if (event.key === "Tab") {
+          const focusable = [...listDialogNode.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]')]
+            .filter(node => node.getClientRects().length);
+          const edge = event.shiftKey ? focusable[0] : focusable.at(-1);
+          if (document.activeElement === edge) {
+            event.preventDefault(); (event.shiftKey ? focusable.at(-1) : focusable[0]).focus();
+          }
+        }
+        if (event.key === "Enter" && event.target.id === "miniV2ListName" && !event.isComposing) {
+          event.preventDefault(); saveListChoice();
+        }
+      });
       root.addEventListener("click", handleRootClick);
       root.addEventListener("input", handleRootInput);
       root.addEventListener("change", handleRootChange);
       root.addEventListener("keydown", handleRootKeydown);
+      detailHeaderTagsNode.addEventListener("pointerover", event => {
+        const button = event.target.closest(".mini-v2-detail-status");
+        if (button && !button.contains(event.relatedTarget) && event.pointerType !== "touch") showDetailStatusTip();
+      });
+      detailHeaderTagsNode.addEventListener("pointerout", scheduleDetailStatusTipHide);
+      detailHeaderTagsNode.addEventListener("focusin", event => {
+        if (event.target.matches(".mini-v2-detail-status")) showDetailStatusTip();
+      });
+      detailHeaderTagsNode.addEventListener("focusout", scheduleDetailStatusTipHide);
+      detailStatusTipNode.addEventListener("pointerenter", () => clearTimeout(detailStatusTipHideTimer));
+      detailStatusTipNode.addEventListener("pointerleave", scheduleDetailStatusTipHide);
+      document.addEventListener("scroll", hideDetailStatusTip, true);
       facetPopoverNode.addEventListener("transitionend", handleFacetPopoverTransitionEnd);
       const facetLayoutObserver = new ResizeObserver(syncFacetPopoverMetrics);
       facetLayoutObserver.observe(facetPopoverBodyNode);
       facetLayoutObserver.observe(facetShellNode);
       facetLayoutObserver.observe(workspaceNode);
+      new ResizeObserver(() => scheduleDetailMarqueeSync(80)).observe(detailHeaderTitleNode);
       detailPanelNode.addEventListener("transitionend", handleDetailPanelTransitionEnd);
       document.addEventListener("click", handleDocumentClick);
       document.addEventListener("pointerdown", handleDocumentPointerDown, true);
@@ -423,6 +518,306 @@
       };
     }
 
+    function activeListValues(key) {
+      return listManager.catalogs[key].filter(choice => !choice.hidden).map(choice => choice.value);
+    }
+
+    function syncListChoices() {
+      LIST_DEFINITIONS.filter(definition => definition.kind).forEach(definition => {
+        FILTER_OPTIONS[definition.kind] = activeListValues(definition.key).filter(value => value !== UNSPECIFIED_VALUE);
+      });
+      state.sets = activeListValues("set").sort(compareText);
+      // Retired values remain valid for existing assignments and browse filters.
+      state.locations = listManager.catalogs.locations.map(choice => choice.value);
+      state.homeLocations = listManager.catalogs.locations.filter(choice => !choice.hidden && choice.home).map(choice => choice.value);
+      PAINT_OPTIONS.splice(0, PAINT_OPTIONS.length, ...listManager.catalogs.paint.map(choice => choice.value));
+      // Keep the editor's live controls, refreshing choices without replacing its draft.
+      if (state.editor) {
+        const options = { ...Object.fromEntries(LIST_DEFINITIONS.filter(item => item.kind).map(item => [item.key, FILTER_OPTIONS[item.kind]])),
+          set: state.sets, paint: PAINT_OPTIONS, home: state.homeLocations };
+        Object.entries(options).forEach(([key, values]) => {
+          const select = detailContentNode.querySelector(`select[data-edit-field="${key}"]`);
+          if (select) select.innerHTML = renderEditOptions(key, values);
+        });
+        detailContentNode.querySelectorAll("select[data-copy-id]").forEach(select => {
+          const copy = editorBaseCopies().find(item => item.id === select.dataset.copyId);
+          if (copy) { const draft = editorCopy(copy); select.innerHTML = renderCopyLocationOptions(draft, draft.currentLocation); }
+        });
+      } else detailContentNode.querySelector(".mini-v2-editor")?.removeAttribute("data-editor-root");
+    }
+
+    function listEditors() {
+      return [state.editor, ...Object.values(state.editorDrafts), ...state.deletedGroups.map(record => record.editor)].filter(Boolean);
+    }
+
+    function listObjectUses(object, key, value) {
+      return key === "locations" ? object.home === value || object.currentLocation === value
+        : (key === "paint" ? getPaintValue(object.paint) : object[key]) === value;
+    }
+
+    function listGroupUses(group, key, value) {
+      return listObjectUses(group, key, value) || (key === "locations" && group.copies.some(copy => listObjectUses(copy, key, value)));
+    }
+
+    function listDraftUses(editor, key, value) {
+      const initial = JSON.parse(editor.initial);
+      return [editor, initial].some(draft => listObjectUses(draft.fields, key, value)
+        || (key === "locations" && Object.values(draft.copies).some(copy => listObjectUses(copy, key, value))));
+    }
+
+    function listChoiceUsage(key, value) {
+      const groups = state.groups.filter(group => listGroupUses(group, key, value)).length;
+      const drafts = listEditors().some(editor => listDraftUses(editor, key, value));
+      const history = state.deletedGroups.some(record => listGroupUses(record.group, key, value));
+      const pending = key === "locations" && Object.values(state.draftLocations).includes(value);
+      return { used: !!(groups || drafts || history || pending), label: groups ? `Used by ${groups} ${groups === 1 ? "group" : "groups"}`
+        : drafts || pending ? "Used in a draft" : history ? "Kept for Undo" : "Unused" };
+    }
+
+    function listHomeInUse(value) {
+      return [...state.groups, ...Object.values(state.newGroups), ...state.deletedGroups.map(record => record.group)]
+        .some(group => group.home === value) || listEditors().some(editor => editor.fields.home === value || JSON.parse(editor.initial).fields.home === value);
+    }
+
+    function renameListReferences(key, before, after) {
+      const patch = object => {
+        if (key === "locations") {
+          if (object.home === before) object.home = after;
+          if (object.currentLocation === before) object.currentLocation = after;
+        } else if (listObjectUses(object, key, before)) object[key] = after;
+      };
+      const patchGroup = group => {
+        patch(group); group.copies.forEach(patch); return enrichGroup(group);
+      };
+      state.groups = state.groups.map(patchGroup);
+      Object.keys(state.newGroups).forEach(id => { state.newGroups[id] = patchGroup(state.newGroups[id]); });
+      state.deletedGroups.forEach(record => { record.group = patchGroup(record.group); });
+      // Relabel both draft and baseline so a global rename is never a miniature edit.
+      listEditors().forEach(editor => {
+        const initial = JSON.parse(editor.initial);
+        [editor, initial].forEach(draft => {
+          patch(draft.fields); Object.values(draft.copies).forEach(patch); draft.addedCopies.forEach(patch);
+        });
+        editor.initial = JSON.stringify(initial);
+      });
+      if (key === "locations") {
+        [state.draftLocations, ...state.deletedGroups.map(record => record.draftLocations)].forEach(locations => {
+          Object.keys(locations).forEach(id => { if (locations[id] === before) locations[id] = after; });
+        });
+      }
+      [state, state.previousBrowse].filter(Boolean).forEach(browse => {
+        if (key === "locations" && browse.locationFilter === before) browse.locationFilter = after;
+        if (key === "set" && browse.filtersApplied.set === before) browse.filtersApplied.set = after;
+        const kind = LIST_DEFINITIONS.find(definition => definition.key === key).kind || (key === "paint" ? "paints" : "");
+        if (kind) browse.filtersApplied[kind] = browse.filtersApplied[kind].map(value => value === before ? after : value);
+      });
+    }
+
+    function openListManager() {
+      hideDetailStatusTip();
+      if (listDialogNode.open) return;
+      state.summaryPanel = ""; state.openFacetKey = ""; state.locationMenuOpen = false;
+      renderSummaryLane(); renderFacetBar(); renderFacetFlyout(); renderLocationFilter();
+      const html = document.documentElement;
+      listManager.pageStyles = { overflow: html.style.overflow, gutter: html.style.scrollbarGutter, x: window.scrollX, y: window.scrollY };
+      if (window.innerWidth > html.clientWidth) html.style.scrollbarGutter = "stable";
+      html.style.overflow = "hidden";
+      renderListManager();
+      listDialogNode.showModal();
+      listDialogNode.querySelector('[data-list-action="close"]').focus({ preventScroll: true });
+    }
+
+    function closeListManager() {
+      if (!listDialogNode.open) return;
+      listDialogNode.close();
+      const saved = listManager.pageStyles;
+      document.documentElement.style.overflow = saved.overflow;
+      document.documentElement.style.scrollbarGutter = saved.gutter;
+      renderAllPreservingScroll(null, { keepSelection: true });
+      window.scrollTo(saved.x, saved.y);
+      const trigger = [...root.querySelectorAll('[data-action="open-lists"]')].find(button => button.getClientRects().length);
+      (trigger || root.querySelector('[data-summary-panel="collection"]')).focus({ preventScroll: true });
+    }
+
+    function renderListManager() {
+      const definition = LIST_DEFINITIONS.find(item => item.key === listManager.key);
+      listDialogNode.querySelector(".mini-v2-lists-nav").innerHTML = LIST_DEFINITIONS.map(item =>
+        `<button type="button" data-list-key="${item.key}" aria-current="${item.key === definition.key ? "true" : "false"}">${item.label}</button>`).join("");
+      document.getElementById("miniV2ListsPicker").innerHTML = LIST_DEFINITIONS.map(item =>
+        `<option value="${item.key}"${item.key === definition.key ? " selected" : ""}>${item.label}</option>`).join("");
+      document.getElementById("miniV2ListsHeading").textContent = definition.title;
+      const count = activeListValues(definition.key).length;
+      document.getElementById("miniV2ListsCount").textContent = `${count} ${count === 1 ? "choice" : "choices"}`;
+      document.getElementById("miniV2ListsSearch").value = listManager.query;
+      renderListChoiceForm(); renderListChoiceRows(); renderListNotice();
+    }
+
+    function renderListChoiceRows() {
+      const key = listManager.key;
+      const query = listManager.query.trim().toLowerCase();
+      const choices = listManager.catalogs[key].filter(choice => !choice.hidden && choice.value.toLowerCase().includes(query));
+      document.getElementById("miniV2ListsRows").innerHTML = choices.length ? choices.map(choice => {
+        const usage = listChoiceUsage(key, choice.value);
+        return `<div class="mini-v2-list-choice" data-list-choice="${choice.id}">
+          <div class="mini-v2-list-choice-text"><span class="mini-v2-list-choice-name">${escapeHtml(choice.value)}</span>
+            <span class="mini-v2-list-choice-meta">${choice.locked ? "Built-in choice" : usage.label}</span>
+            ${key === "locations" ? `<span class="mini-v2-list-choice-context">${choice.home ? "Home + current location" : "Current location only"}</span>` : ""}</div>
+          <div class="mini-v2-list-choice-actions">${choice.locked ? '<span class="mini-v2-list-protected">Built-in</span>' : `
+            <button type="button" data-list-action="rename" data-choice-id="${choice.id}" aria-label="${key === "locations" ? "Edit" : "Rename"} ${escapeHtml(choice.value)}"${listManager.forms[key] ? " disabled" : ""}>${key === "locations" ? "Edit" : "Rename"}</button>
+            <button type="button" data-list-action="remove" data-choice-id="${choice.id}" aria-label="Remove ${escapeHtml(choice.value)}"${listManager.forms[key] ? " disabled" : ""}>Remove</button>`}</div></div>`;
+      }).join("") : '<p class="mini-v2-list-empty">No matching choices. Use Add to create one.</p>';
+    }
+
+    function listFormError() {
+      const form = listManager.forms[listManager.key];
+      if (!form || form.mode === "remove") return "";
+      const name = form.name.trim();
+      if (!name) return "Enter a name.";
+      const duplicate = listManager.catalogs[listManager.key].find(choice => choice.id !== form.id && choice.value.toLowerCase() === name.toLowerCase());
+      if (duplicate && !duplicate.hidden) return "This choice already exists.";
+      const reserved = ["n/a", UNSPECIFIED_VALUE.toLowerCase(),
+        ...(listManager.key === "locations" ? ["__return_home__", "all"] : []),
+        ...(listManager.key === "paint" ? ["true", "false"] : [])];
+      if (reserved.includes(name.toLowerCase())) return "This name is reserved by the app.";
+      if (duplicate?.hidden && form.id) return "This choice was removed. Restore it using Add instead of renaming another choice to it.";
+      return "";
+    }
+
+    function renderListChoiceForm() {
+      const key = listManager.key, form = listManager.forms[key];
+      const node = document.getElementById("miniV2ListsForm");
+      listDialogNode.querySelector('[data-list-action="add"]').disabled = !!form;
+      node.hidden = !form;
+      if (!form) { node.innerHTML = ""; return; }
+      const definition = LIST_DEFINITIONS.find(item => item.key === key);
+      const choice = listManager.catalogs[key].find(item => item.id === form.id);
+      const used = choice && listChoiceUsage(key, choice.value).used;
+      const removing = form.mode === "remove";
+      node.innerHTML = `<div class="mini-v2-list-form">
+        <label class="mini-v2-field-label"${removing ? "" : ' for="miniV2ListName"'}>${removing ? "Remove choice" : `${choice ? "Edit" : "New"} ${definition.label === "Locations" ? "location" : definition.label}`}</label>
+        ${removing ? `<p>Remove ${escapeHtml(choice.value)} from future selections?</p><p class="mini-v2-list-form-help">${used ? "Existing miniatures and drafts keep this value. It remains filterable while used. You can undo this removal." : "This choice is unused. You can undo this removal."}</p>` : `
+          <input id="miniV2ListName" class="mini-v2-lists-input" value="${escapeHtml(form.name)}" aria-describedby="miniV2ListFormError" autocomplete="off">
+          ${key === "locations" ? `<label class="mini-v2-list-home"><input id="miniV2ListHome" type="checkbox"${form.home ? " checked" : ""}${choice?.home && listHomeInUse(choice.value) ? " disabled" : ""}> Also offer as a Home location</label>
+            ${choice?.home && listHomeInUse(choice.value) ? '<p class="mini-v2-list-form-help">Home is in use. Change those assignments before turning this off.</p>' : ""}` : ""}
+          <p id="miniV2ListFormError" class="mini-v2-list-form-error" role="status"></p>`}
+        <div class="mini-v2-list-form-actions">
+          <button class="button mini-v2-copy-btn" type="button" data-list-action="cancel">Cancel</button>
+          <button class="button mini-v2-copy-btn ${removing ? "mini-v2-secondary" : "mini-v2-primary"}" type="button" data-list-action="save">${removing ? "Remove choice" : choice ? "Save name" : "Add"}</button>
+        </div></div>`;
+      syncListForm();
+    }
+
+    function syncListForm() {
+      const form = listManager.forms[listManager.key];
+      if (!form || form.mode === "remove") return;
+      const error = listFormError();
+      const message = document.getElementById("miniV2ListFormError");
+      message.textContent = form.name.trim() ? error : "";
+      const duplicate = listManager.catalogs[listManager.key].find(choice => choice.id !== form.id && choice.value.toLowerCase() === form.name.trim().toLowerCase());
+      const button = listDialogNode.querySelector('[data-list-action="save"]');
+      button.disabled = !!error;
+      button.textContent = duplicate?.hidden ? "Restore choice" : form.id ? "Save changes" : "Add";
+      button.title = error;
+      document.getElementById("miniV2ListName").setAttribute("aria-invalid", String(!!error && !!form.name.trim()));
+    }
+
+    function renderListNotice() {
+      listManager.undo = listManager.undo.filter(record =>
+        listManager.catalogs[record.key].some(choice => choice.id === record.id && choice.hidden));
+      document.getElementById("miniV2ListsNotice").textContent = listManager.notice || "Shared choices for your miniature dropdowns.";
+      listDialogNode.querySelector('[data-list-action="undo"]').hidden = !listManager.undo.length;
+    }
+
+    function saveListChoice() {
+      const key = listManager.key, form = listManager.forms[key];
+      if (!form || listFormError()) return;
+      const choice = listManager.catalogs[key].find(item => item.id === form.id);
+      if (choice?.locked) return;
+      if (form.mode === "remove") {
+        if (!choice || choice.hidden) return;
+        choice.hidden = true;
+        listManager.undo.push({ key, id: choice.id });
+        listManager.notice = `Removed ${choice.value} from future choices.`;
+      } else {
+        const name = form.name.trim();
+        const duplicate = listManager.catalogs[key].find(item => item.id !== form.id && item.value.toLowerCase() === name.toLowerCase());
+        if (duplicate?.hidden) {
+          if (choice) { listManager.notice = "Restore the removed choice using Add before making this rename."; renderListNotice(); return; }
+          duplicate.hidden = false;
+          if (key === "locations") duplicate.home = duplicate.home || form.home;
+          listManager.notice = `Restored ${duplicate.value}. Miniature assignments are unchanged.`;
+        } else if (choice) {
+          if (key === "locations" && choice.home && !form.home && listHomeInUse(choice.value)) return;
+          if (choice.value !== name) renameListReferences(key, choice.value, name);
+          choice.value = name; choice.home = !!form.home;
+          listManager.notice = `Updated ${name}. Existing assignments keep their meaning.`;
+        } else {
+          listManager.catalogs[key].push({ id: `choice-${listManager.nextId++}`, value: name, home: !!form.home, hidden: false, locked: false });
+          listManager.notice = `Added ${name}. Available in your dropdowns.`;
+        }
+      }
+      delete listManager.forms[key]; listManager.query = "";
+      syncListChoices();
+      renderAllPreservingScroll(null, { keepSelection: true });
+      renderListManager();
+      listDialogNode.querySelector('[data-list-action="add"]').focus({ preventScroll: true });
+    }
+
+    function handleListManagerClick(event) {
+      event.stopPropagation();
+      const category = event.target.closest("button[data-list-key]");
+      if (category) {
+        listManager.key = category.dataset.listKey; listManager.query = "";
+        renderListManager();
+        listDialogNode.querySelector(`[data-list-key="${listManager.key}"]`).focus();
+        return;
+      }
+      const button = event.target.closest("button[data-list-action]");
+      if (!button || button.disabled) return;
+      const action = button.dataset.listAction, key = listManager.key;
+      if (action === "close") { closeListManager(); return; }
+      if (action === "save") { saveListChoice(); return; }
+      if (action === "undo") {
+        let record, choice;
+        while (listManager.undo.length && !choice) {
+          record = listManager.undo.pop();
+          choice = listManager.catalogs[record.key].find(item => item.id === record.id && item.hidden);
+        }
+        if (!choice) { renderListNotice(); return; }
+        choice.hidden = false; listManager.key = record.key; listManager.query = "";
+        listManager.notice = `Restored ${choice.value}. Miniature assignments are unchanged.`;
+        syncListChoices(); renderAllPreservingScroll(null, { keepSelection: true }); renderListManager();
+        (document.getElementById("miniV2ListName") || listDialogNode.querySelector('[data-list-action="add"]:not(:disabled)')
+          || listDialogNode.querySelector('[data-list-action="close"]')).focus({ preventScroll: true });
+        return;
+      }
+      if (action === "cancel") delete listManager.forms[key];
+      else if (action === "add") listManager.forms[key] = listManager.forms[key] || { mode: "add", name: "", home: false };
+      else {
+        const choice = listManager.catalogs[key].find(item => item.id === button.dataset.choiceId);
+        if (!choice || choice.locked) return;
+        listManager.forms[key] = { mode: action, id: choice.id, name: choice.value, home: choice.home };
+      }
+      renderListChoiceForm();
+      renderListChoiceRows();
+      (document.getElementById("miniV2ListName") || listDialogNode.querySelector(`[data-list-action="${action === "cancel" ? "add" : "cancel"}"]`)).focus({ preventScroll: true });
+    }
+
+    function handleListManagerInput(event) {
+      event.stopPropagation();
+      const node = event.target;
+      if (node.id === "miniV2ListsSearch") { listManager.query = node.value; renderListChoiceRows(); return; }
+      if (node.id === "miniV2ListsPicker") {
+        listManager.key = node.value; listManager.query = ""; renderListManager();
+        document.getElementById("miniV2ListsPicker").focus(); return;
+      }
+      const form = listManager.forms[listManager.key];
+      if (!form) return;
+      if (node.id === "miniV2ListName") form.name = node.value;
+      if (node.id === "miniV2ListHome") form.home = node.checked;
+      syncListForm();
+    }
+
     function renderSummaryLane() {
       const copies = state.groups.flatMap(group => group.copies);
       const missing = copies.filter(copy => getStickerStatus(copy.sticker) === "Missing").length;
@@ -433,6 +828,7 @@
       const expanded = panel => String(state.summaryPanel === panel);
       const dashboard = `<button type="button" class="mini-v2-dashboard" disabled aria-label="Dashboard, coming soon">
         Dashboard <span>Soon</span></button>`;
+      const lists = '<button type="button" class="mini-v2-summary-control mini-v2-lists-trigger" data-action="open-lists" aria-haspopup="dialog">Lists</button>';
       const shortcut = (view, count, label) => `<button type="button" class="mini-v2-summary-shortcut"
         data-action="collection-view" data-collection-view="${view}" aria-pressed="${state.collectionView === view}"
         title="${state.collectionView === view ? "Return to your previous browse view" : `Browse individual miniatures: ${label} (applied collection only)`}">
@@ -445,7 +841,7 @@
             <strong>${copies.length}</strong> <span class="mini-v2-summary-wide">miniatures across</span><span class="mini-v2-summary-small">minis<span class="mini-v2-total-groups"> /</span></span>
             <span class="mini-v2-total-groups"><strong>${state.groups.length}</strong> ${state.groups.length === 1 ? "group" : "groups"}</span>
           </span>
-          <span class="mini-v2-summary-desktop">${dashboard}</span>
+          <span class="mini-v2-summary-desktop mini-v2-summary-tools">${dashboard}${lists}</span>
         </div>
         <div class="mini-v2-summary-desktop mini-v2-summary-shortcuts">${shortcuts}</div>
         <div class="mini-v2-summary-compact">
@@ -454,7 +850,8 @@
             aria-expanded="${expanded("collection")}" aria-controls="miniV2CollectionMenu">${state.collectionView === "away" ? "Away" : state.collectionView === "missing" ? "Stickers" : "Collection"}<span class="mini-v2-summary-caret" aria-hidden="true"></span></button>
           <div id="miniV2CollectionMenu" class="mini-v2-summary-popover" ${state.summaryPanel === "collection" ? "" : "hidden"}>
             <p class="mini-v2-summary-heading">Whole collection</p>
-            <p class="mini-v2-summary-empty">${copies.length} miniatures / ${state.groups.length} ${state.groups.length === 1 ? "group" : "groups"}</p>${shortcuts}${dashboard}
+            <p class="mini-v2-summary-empty">${copies.length} miniatures / ${state.groups.length} ${state.groups.length === 1 ? "group" : "groups"}</p>${shortcuts}
+            <div class="mini-v2-summary-tools">${dashboard}${lists}</div>
           </div>
         </div>
         <div class="mini-v2-summary-recovery">
@@ -468,6 +865,7 @@
             ${dirtyCount ? `<button type="button" data-action="review-changes">Pending locations <span>${dirtyCount} ${dirtyCount === 1 ? "copy" : "copies"}</span></button>` : ""}
             ${draftCount ? `<button type="button" data-action="review-editor-drafts">Resume drafts <span>${draftCount} ${draftCount === 1 ? "group" : "groups"}</span></button>` : ""}
             ${state.deletedGroups.length ? `<button type="button" data-action="undo-delete-group">Undo deletion <span>${escapeHtml(state.deletedGroups.at(-1).group.name)}</span></button>` : ""}
+            ${state.deletedGroups.at(-1)?.restoreError ? `<p class="mini-v2-summary-empty" role="status">${escapeHtml(state.deletedGroups.at(-1).restoreError)}</p>` : ""}
             ${hasWork ? "" : '<p class="mini-v2-summary-empty">No pending edits.</p>'}
             <p class="mini-v2-summary-footnote">${previewMode ? "Preview" : "Demo"} only. Applied changes and drafts reset on reload.</p>
           </div>
@@ -585,7 +983,10 @@
       locationSearchNode.value = state.locationMenuSearch;
 
       const query = state.locationMenuSearch.trim().toLowerCase();
-      const matchingLocations = state.locations.filter(location => location.toLowerCase().includes(query));
+      // Keep removed locations discoverable only while used or explicitly filtered.
+      const filterableLocations = new Set([...activeListValues("locations"), state.locationFilter,
+        ...state.groups.flatMap(group => [group.home, ...group.copies.map(copy => copy.currentLocation)])]);
+      const matchingLocations = state.locations.filter(location => filterableLocations.has(location) && location.toLowerCase().includes(query));
       const options = [
         {
           value: "all",
@@ -646,7 +1047,8 @@
         return state.filtersApplied.roles.length
           + state.filtersApplied.paints.length
           + (state.filtersApplied.set ? 1 : 0)
-          + state.filtersApplied.stickers.length;
+          + state.filtersApplied.stickers.length
+          + state.filtersApplied.recordStatuses.length;
       }
 
       const values = state.filtersApplied[facetKey];
@@ -659,6 +1061,7 @@
         state.filtersApplied.paints = [];
         state.filtersApplied.set = "";
         state.filtersApplied.stickers = [];
+        state.filtersApplied.recordStatuses = [];
         return;
       }
 
@@ -804,8 +1207,9 @@
           <div class="mini-v2-facet-more">
             ${renderFacetGroup("Role", renderFacetTileGrid("roles", getFacetOptions("roles"), state.filtersApplied.roles, "is-three-col"))}
             ${renderSetFilter()}
-            ${renderFacetGroup("Paint status", renderFacetTileGrid("paints", PAINT_OPTIONS, state.filtersApplied.paints, "is-three-col mini-v2-facet-paint-grid"))}
+            ${renderFacetGroup("Paint status", renderFacetTileGrid("paints", [...new Set([...activeListValues("paint"), ...state.groups.map(group => getPaintValue(group.paint)), ...state.filtersApplied.paints])].filter(Boolean), state.filtersApplied.paints, "is-three-col mini-v2-facet-paint-grid"))}
             ${renderFacetGroup("Stickers", renderFacetTileGrid("stickers", STICKER_FILTER_OPTIONS, state.filtersApplied.stickers, "is-three-col"))}
+            ${renderFacetGroup("Record status", renderFacetTileGrid("recordStatuses", RECORD_STATUS_OPTIONS, state.filtersApplied.recordStatuses, "is-three-col"))}
           </div>
         `;
       }
@@ -817,7 +1221,7 @@
       const known = FILTER_OPTIONS[kind];
       const field = FACET_FIELDS[kind];
       const extra = [...new Set(state.groups.map(group => group[field]).concat(state.filtersApplied[kind]))]
-        .filter(value => value && value !== UNSPECIFIED_VALUE && !known.includes(value))
+        .filter(value => hasMeaningfulValue(value) && value !== UNSPECIFIED_VALUE && !known.includes(value))
         .sort(compareText);
       return [...known, ...extra, UNSPECIFIED_VALUE];
     }
@@ -825,7 +1229,7 @@
     function renderSetFilter() {
       const selected = state.filtersApplied.set;
       const options = [...new Set([...state.sets, ...state.groups.map(group => group.set), selected, "n/a", UNSPECIFIED_VALUE])]
-        .filter(Boolean).sort(compareText);
+        .filter(hasMeaningfulValue).sort(compareText);
       return `<div class="mini-v2-facet-group">
         <label class="mini-v2-facet-group-label" for="miniV2SetFilter">Set</label>
         <select id="miniV2SetFilter" class="mini-v2-facet-select" data-filter-set title="${escapeHtml(selected || "All sets")}">
@@ -867,6 +1271,9 @@
       const title = kind === "stickers"
         ? value === "Assigned" ? "Copies with an ID or explicit n/a; groups match if any copy qualifies."
           : "Copies with a blank ID; groups match if any copy qualifies."
+        : kind === "recordStatuses"
+          ? value === "Complete" ? "All required details filled in and stickers resolved (ID or n/a). Groups require every copy; Individuals check that copy."
+            : "Missing required details or a blank sticker. Groups include any affected copy; Individuals show affected copies."
         : value;
       return `
         <button
@@ -910,12 +1317,12 @@
                 : `<span class="mini-v2-count mini-v2-count--browse ${statusClass(status)}" title="${group.available} of ${group.total} available">${group.available}/${group.total}</span>`}
             </td>
             <td class="mini-v2-cell mini-v2-cell-name"><div class="mini-v2-name" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</div></td>
-            <td class="mini-v2-cell mini-v2-cell-home">${copy ? renderBrowseCopyLocation(copy) : `<span title="${escapeHtml(group.home)}">${escapeHtml(group.home)}</span>`}</td>
-            <td class="mini-v2-cell mini-v2-cell-size" title="${escapeHtml(group.size)}">${escapeHtml(group.size)}</td>
-            <td class="mini-v2-cell mini-v2-cell-type" title="${escapeHtml(group.creatureType)}">${escapeHtml(group.creatureType)}</td>
-            <td class="mini-v2-cell mini-v2-cell-race" title="${escapeHtml(group.race || "n/a")}">${escapeHtml(group.race || "n/a")}</td>
-            <td class="mini-v2-cell mini-v2-cell-sex" title="${escapeHtml(group.sex || "n/a")}">${escapeHtml(group.sex || "n/a")}</td>
-            <td class="mini-v2-cell mini-v2-cell-role" title="${escapeHtml(group.role || "n/a")}">${escapeHtml(group.role || "n/a")}</td>
+            ${copy ? `<td class="mini-v2-cell mini-v2-cell-home">${renderBrowseCopyLocation(copy)}</td>` : renderBrowseFieldCell("home", group.home)}
+            ${renderBrowseFieldCell("size", group.size)}
+            ${renderBrowseFieldCell("type", group.creatureType)}
+            ${renderBrowseFieldCell("race", group.race)}
+            ${renderBrowseFieldCell("sex", group.sex)}
+            ${renderBrowseFieldCell("role", group.role)}
           </tr>
         `;
       }).join("");
@@ -941,6 +1348,12 @@
       `;
     }
 
+    function renderBrowseFieldCell(key, value) {
+      const missing = !hasMeaningfulValue(value);
+      const label = escapeHtml(missing ? MISSING_VALUE_LABEL : value);
+      return `<td class="mini-v2-cell mini-v2-cell-${key}${missing ? " mini-v2-missing-value" : ""}" title="${label}">${label}</td>`;
+    }
+
     function renderBrowseCopyLocation(copy) {
       const away = copy.currentLocation !== copy.home;
       const label = away ? "Away" : "Home";
@@ -953,7 +1366,16 @@
       `;
     }
 
+    function setDetailHeaderTitle(value) {
+      if (detailHeaderTitleNode.textContent !== value) {
+        resetMarquee(detailHeaderTitleNode);
+        detailHeaderTitleNode.querySelector(".mini-v2-marquee-text").textContent = value;
+      }
+      detailHeaderTitleNode.title = value;
+    }
+
     function renderDetail() {
+      hideDetailStatusTip();
       const group = getSelectedGroup();
       const editing = !!state.editor;
       const editButton = root.querySelector('.mini-v2-detail-header-actions button:first-child');
@@ -966,6 +1388,7 @@
       detailCloseButtonNode.title = editing ? "Close and keep your draft until reload" : "Close details";
       detailPanelNode.classList.toggle("is-editing", editing);
       detailHeaderTitleNode.hidden = editing;
+      if (editing || !group) resetMarquee(detailHeaderTitleNode);
       const nameInput = document.getElementById("miniV2EditName");
       nameInput.hidden = !editing;
       nameInput.placeholder = "Miniature name";
@@ -986,7 +1409,7 @@
       }
 
       if (!group) {
-        detailHeaderTitleNode.textContent = "Mini Details";
+        setDetailHeaderTitle("Mini Details");
         detailHeaderTagsNode.innerHTML = "";
         detailEmptyNode.hidden = false;
         detailContentNode.hidden = true;
@@ -995,19 +1418,18 @@
       }
 
       const dirtyCount = group.copies.filter(isDirty).length;
-      const missingFieldLabels = getMissingFieldLabels(group);
-      const missingFieldCount = missingFieldLabels.length;
+      const completeness = getRecordCompleteness(group);
+      const missingFieldLabels = completeness.missingFields;
       const canSetAllHome = group.copies.some(copy => getEffectiveLocation(copy) !== copy.home);
       const collectionSummary = getCollectionSummary(group);
-      detailHeaderTitleNode.textContent = group.name;
+      setDetailHeaderTitle(group.name);
+      detailStatusTipNode.textContent = [
+        missingFieldLabels.length ? `Missing: ${missingFieldLabels.join(", ")}` : "",
+        completeness.missingStickerCount
+          ? `Stickers needed: ${completeness.missingStickerCount} ${completeness.missingStickerCount === 1 ? "copy" : "copies"} in this group.` : ""
+      ].filter(Boolean).join("\n") || "All group details are filled in; every copy has a sticker or explicit n/a.";
       detailHeaderTagsNode.innerHTML = [
-        missingFieldCount
-          ? renderDetailTag(
-            `${missingFieldCount} missing field${missingFieldCount === 1 ? "" : "s"}`,
-            "is-warn",
-            `Missing: ${missingFieldLabels.join(", ")}`
-          )
-          : renderDetailTag("Ready", "is-success"),
+        renderDetailStatus(completeness.status === "Incomplete"),
         dirtyCount ? renderDetailTag(`Unsaved ${dirtyCount}`, "is-warn") : ""
       ].join("");
       detailCloseButtonNode.disabled = false;
@@ -1022,17 +1444,18 @@
             <div class="mini-v2-detail-grid">
               ${renderReadCard("Size", group.size)}
               ${renderReadCard("Creature Type", group.creatureType)}
-              ${renderReadCard("Race", group.race || "n/a")}
+              ${renderReadCard("Race", group.race)}
               ${renderReadCard("Sex", group.sex)}
-              ${renderReadCard("Role", group.role || "n/a")}
+              ${renderReadCard("Role", group.role)}
             </div>
           </section>
 
           <section class="mini-v2-detail-group">
             <div class="mini-v2-detail-group-title">Miniature</div>
             <div class="mini-v2-product-grid">
-              ${renderReadCard("Set", collectionSummary, { marquee: true, wide: true })}
-              ${renderReadCard("Paint", getPaintValue(group.paint) || "—")}
+              ${renderReadCard("Set", collectionSummary, { marquee: true, wide: true,
+                incomplete: missingFieldLabels.includes("Set") || missingFieldLabels.includes("Set #") })}
+              ${renderReadCard("Paint", getPaintValue(group.paint))}
             </div>
           </section>
 
@@ -1230,9 +1653,8 @@
         if (id && id !== "N/A") used.add(id);
       };
       state.groups.filter(group => group.rootId !== excludeRootId)
-        .concat(state.deletedGroups.map(record => record.group))
         .forEach(group => group.copies.forEach(copy => reserve(copy.sticker)));
-      [state.editor, ...Object.values(state.editorDrafts), ...state.deletedGroups.map(record => record.editor)]
+      [state.editor, ...Object.values(state.editorDrafts)]
         .filter(editor => editor && editor.rootId !== excludeRootId)
         .forEach(editor => Object.values(editor.copies).forEach(copy => reserve(copy.sticker)));
       return used;
@@ -1364,7 +1786,7 @@
 
     function renderEditOptions(key, options) {
       const value = state.editor.fields[key];
-      const choices = key === "paint" ? ["", ...PAINT_OPTIONS] : Array.from(new Set([
+      const choices = key === "paint" ? [...new Set(["", ...activeListValues("paint"), value])] : Array.from(new Set([
         ...(key === "home" && value ? [] : [""]), ...options,
         ...(Object.hasOwn(EDIT_REQUIRED_CHOICES, key) ? [UNSPECIFIED_VALUE] : []), value]));
       return choices.map(option =>
@@ -1443,7 +1865,8 @@
     function syncEditorFeedback() {
       if (!state.editor) return;
       const changed = editorHasChanges();
-      detailContentNode.querySelector('[data-edit-field="set"]').title = state.editor.fields.set || "Set not specified";
+      detailContentNode.querySelector('[data-edit-field="set"]').title = hasMeaningfulValue(state.editor.fields.set)
+        ? state.editor.fields.set : "Set not entered";
       const setNumber = detailContentNode.querySelector('[data-edit-field="setNumber"]');
       setNumber.disabled = !hasNamedSet(state.editor.fields);
       setNumber.value = setNumber.disabled ? "" : state.editor.fields.setNumber;
@@ -1541,6 +1964,8 @@
 
     function getEditorValidationError() {
       const editor = state.editor;
+      const paintChoices = activeListValues("paint");
+      const paintMessage = `Choose Paint: ${paintChoices.length > 1 ? `${paintChoices.slice(0, -1).join(", ")}, or ${paintChoices.at(-1)}` : paintChoices[0] || "a listed status"}.`;
       if (!editor.fields.name.trim()) {
         return { message: "Enter a miniature name before saving.", selector: "#miniV2EditName" };
       }
@@ -1549,12 +1974,12 @@
       }
       const initial = JSON.parse(editor.initial);
       if ((editor.fields.paint || initial.fields.paint) && !PAINT_OPTIONS.includes(editor.fields.paint)) {
-        return { message: "Choose Paint: Painted, Unpainted, or Work in Progress.", selector: '[data-edit-field="paint"]' };
+        return { message: paintMessage, selector: '[data-edit-field="paint"]' };
       }
       if (editor.isNew) {
         for (const [key, label] of Object.entries(EDIT_REQUIRED_CHOICES)) {
           if (!editor.fields[key].trim()) {
-            return { message: key === "paint" ? "Choose Paint: Painted, Unpainted, or Work in Progress."
+            return { message: key === "paint" ? paintMessage
               : `Choose ${label} before creating this group. Not specified is an explicit choice.`,
               selector: `[data-edit-field="${key}"]` };
           }
@@ -1653,7 +2078,19 @@
     function undoGroupDeletion() {
       const record = state.deletedGroups.at(-1);
       if (!record) return;
-      // A deleted group's stickers remain reserved while Undo can restore it.
+      // Deleted records release stickers. Only a restore must check for later reuse.
+      const assigned = reservedStickerIds();
+      const conflicts = [...new Set(record.group.copies.concat(Object.values(record.editor?.copies || {}))
+        .map(copy => String(copy.sticker || "").trim().toUpperCase())
+        .filter(sticker => assigned.has(sticker)))];
+      if (conflicts.length) {
+        const labels = conflicts.slice(0, 3).join(", ") + (conflicts.length > 3 ? ` and ${conflicts.length - 3} more` : "");
+        record.restoreError = `Cannot undo yet: ${labels} ${conflicts.length === 1 ? "is" : "are"} used by another group or draft. Change that assignment first. The deleted group is still kept.`;
+        state.summaryPanel = "changes";
+        renderSummaryLane();
+        root.querySelector('[data-action="undo-delete-group"]').focus({ preventScroll: true });
+        return;
+      }
       leaveEditor();
       state.deletedGroups.pop();
       state.groups.push(record.group);
@@ -1676,6 +2113,49 @@
       return `<span class="mini-v2-detail-tag ${className || ""}"${titleText ? ` title="${escapeHtml(titleText)}"` : ""}>${escapeHtml(label)}</span>`;
     }
 
+    function renderDetailStatus(incomplete) {
+      return `<button type="button" class="mini-v2-detail-status ${incomplete ? "is-warn" : "is-success"}"
+        data-action="toggle-detail-status" aria-label="Group record ${incomplete ? "incomplete" : "complete"}"
+        aria-describedby="miniV2DetailStatusTip" aria-controls="miniV2DetailStatusTip" aria-expanded="false">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          ${incomplete ? '<path d="M10 4v7"/><circle cx="10" cy="15" r="1.2" fill="currentColor" stroke="none"/>' : '<path d="m4 10 4 4 8-8"/>'}
+        </svg>
+      </button>`;
+    }
+
+    function showDetailStatusTip() {
+      const button = detailHeaderTagsNode.querySelector(".mini-v2-detail-status");
+      if (!button || listDialogNode.open) return;
+      clearTimeout(detailStatusTipHideTimer);
+      detailStatusTipNode.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      const anchor = button.getBoundingClientRect();
+      const tip = detailStatusTipNode.getBoundingClientRect();
+      const width = document.documentElement.clientWidth;
+      const height = document.documentElement.clientHeight;
+      detailStatusTipNode.style.left = `${Math.max(8, Math.min(anchor.left, width - tip.width - 8))}px`;
+      const top = anchor.bottom + 6 + tip.height <= height - 8 ? anchor.bottom + 6 : anchor.top - tip.height - 6;
+      detailStatusTipNode.style.top = `${Math.max(8, top)}px`;
+    }
+
+    function hideDetailStatusTip() {
+      clearTimeout(detailStatusTipHideTimer);
+      detailStatusTipPinned = false;
+      detailStatusTipNode.hidden = true;
+      detailHeaderTagsNode.querySelector(".mini-v2-detail-status")?.setAttribute("aria-expanded", "false");
+    }
+
+    function scheduleDetailStatusTipHide() {
+      clearTimeout(detailStatusTipHideTimer);
+      // Allow crossing the small gap into the explanation without dismissing it.
+      detailStatusTipHideTimer = setTimeout(() => {
+        const button = detailHeaderTagsNode.querySelector(".mini-v2-detail-status");
+        if (detailStatusTipPinned || button === document.activeElement || button?.matches(":hover")
+          || detailStatusTipNode.matches(":hover")) return;
+        hideDetailStatusTip();
+      }, 150);
+    }
+
     function renderStatCard(label, valueMarkup) {
       return `
         <div class="mini-v2-stat-card">
@@ -1686,7 +2166,7 @@
     }
 
     function renderReadCard(label, value, options) {
-      const config = options || {};
+      const config = { required: true, ...options };
       return `
         <div class="mini-v2-read-card${config.wide ? " mini-v2-set-field" : ""}">
           <div class="mini-v2-field-label">${escapeHtml(label)}</div>
@@ -1728,7 +2208,7 @@
           <div class="mini-v2-inventory-summary-value">
             ${state.editor
               ? `<select id="miniV2EditHome" class="mini-v2-inventory-home-select" data-edit-field="home">${renderEditOptions("home", state.homeLocations)}</select>`
-              : renderReadValue(group.home || "Not specified", { marquee: true })}
+              : renderReadValue(group.home, { marquee: true, required: true })}
           </div>
         </div>
       </div>`;
@@ -1736,10 +2216,12 @@
 
     function renderReadValue(value, options) {
       const config = options || {};
-      const className = [config.className || "mini-v2-read-value", config.extraClass || "", config.marquee ? "mini-v2-marquee-value" : ""]
+      const missing = config.required && !hasMeaningfulValue(value);
+      const className = [config.className || "mini-v2-read-value", config.extraClass || "", config.marquee ? "mini-v2-marquee-value" : "",
+        missing || config.incomplete ? "mini-v2-missing-value" : ""]
         .filter(Boolean)
         .join(" ");
-      const safeValue = escapeHtml(value);
+      const safeValue = escapeHtml(missing ? MISSING_VALUE_LABEL : value);
 
       if (!config.marquee) {
         return `<div class="${className}">${safeValue}</div>`;
@@ -1828,7 +2310,7 @@
     function renderCopyLocationOptions(copy, effectiveLocation) {
       return [!effectiveLocation ? '<option value="" selected>Choose location</option>' : "",
         `<option value="__RETURN_HOME__"${effectiveLocation === copy.home && !!copy.home ? " selected" : ""}>Return Home</option>`]
-        .concat(Array.from(new Set([...state.locations, effectiveLocation, copy.home])).filter(Boolean).map(location => `
+        .concat(Array.from(new Set([...activeListValues("locations"), effectiveLocation, copy.home])).filter(Boolean).map(location => `
           <option value="${escapeHtml(location)}"${effectiveLocation === location ? " selected" : ""}>${escapeHtml(location)}</option>
         `))
         .join("");
@@ -1844,9 +2326,9 @@
       const hasSet = hasNamedSet(group);
       const hasSetNumber = hasMeaningfulValue(group.setNumber);
       if (hasSet && hasSetNumber) return `${group.set} (${group.setNumber})`;
-      if (hasSet) return String(group.set);
-      if (hasSetNumber) return `#${group.setNumber}`;
-      return "n/a";
+      if (hasSet) return `${group.set} (# not entered)`;
+      if (hasSetNumber) return `${MISSING_VALUE_LABEL} (#${group.setNumber})`;
+      return "";
     }
 
     function renderSortHeader(cellClassName, sortKey, visibleLabel, spokenLabel) {
@@ -1873,6 +2355,7 @@
     }
 
     function handleRootClick(event) {
+      if (listDialogNode.open) return;
       const clickTarget = event.target instanceof Element ? event.target : null;
       const viewButton = clickTarget && clickTarget.closest("button[data-browse-mode]");
       if (viewButton && root.contains(viewButton)) {
@@ -1888,7 +2371,14 @@
         event.stopPropagation();
         const action = actionButton.getAttribute("data-action");
 
+        if (action === "toggle-detail-status") {
+          // Focus can already have opened the tip before the first click/tap.
+          if (detailStatusTipPinned) hideDetailStatusTip();
+          else { detailStatusTipPinned = true; showDetailStatusTip(); }
+          return;
+        }
         if (action === "toggle-summary") { toggleSummaryPanel(actionButton.dataset.summaryPanel); return; }
+        if (action === "open-lists") { openListManager(); return; }
         if (action === "collection-view") { openCollectionView(actionButton.dataset.collectionView); return; }
         if (["review-changes", "review-editor-drafts", "undo-delete-group"].includes(action)) state.summaryPanel = "";
         if (action === "new-group") { beginNewGroup(); return; }
@@ -2131,6 +2621,13 @@
     }
 
     function handleRootKeydown(event) {
+      if (listDialogNode.open) return;
+      if (event.key === "Escape" && !detailStatusTipNode.hidden) {
+        event.preventDefault();
+        event.stopPropagation();
+        hideDetailStatusTip();
+        return;
+      }
       if (event.key === "Escape" && state.summaryPanel) {
         event.preventDefault();
         const panel = state.summaryPanel;
@@ -2216,6 +2713,11 @@
 
     function dismissOutsidePopovers(target) {
       let dismissed = false;
+      if (!detailStatusTipNode.hidden && target instanceof Element
+        && !target.closest(".mini-v2-detail-status, #miniV2DetailStatusTip")) {
+        dismissed = true;
+        hideDetailStatusTip();
+      }
       if (state.summaryPanel && target instanceof Element
         && !target.closest(".mini-v2-summary-popover, .mini-v2-top-card button")) {
         dismissed = true;
@@ -2238,6 +2740,7 @@
     }
 
     function handleDocumentClick(event) {
+      if (listDialogNode.open) return;
       const target = event && event.target;
       const dismissed = dismissOutsidePopovers(target);
       const detailPointerDownInside = state.detailPointerDownInside;
@@ -2249,6 +2752,7 @@
     }
 
     function handleDocumentPointerDown(event) {
+      if (listDialogNode.open) { state.detailPointerDownInside = false; return; }
       const target = event && event.target;
       state.detailPointerDownInside = !!(target instanceof Element && target.closest("#miniV2DetailPanel"));
     }
@@ -2263,6 +2767,7 @@
     function isDetailPersistentClickTarget(target) {
       if (!target || !(target instanceof Element)) return false;
       if (target.closest("#miniV2DetailPanel")) return true;
+      if (target.closest("#miniV2DetailStatusTip")) return true;
       if (target.closest("#miniV2FacetShell")) return true;
       if (target.closest(".mini-v2-summary-popover")) return true;
       if (target.closest("tr[data-group-id]")) return true;
@@ -2452,20 +2957,24 @@
       }, delayMs || 0);
     }
 
-    function syncDetailMarquees() {
-      if (!detailContentNode || detailContentNode.hidden) return;
+    function resetMarquee(node) {
+      if (node._miniV2MarqueeAnimation) {
+        node._miniV2MarqueeAnimation.cancel();
+        node._miniV2MarqueeAnimation = null;
+      }
+      const textNode = node.querySelector(".mini-v2-marquee-text");
+      if (textNode) textNode.style.transform = "translateX(0)";
+    }
 
-      detailContentNode.querySelectorAll(".mini-v2-marquee-value").forEach(node => {
+    function syncDetailMarquees() {
+      if (!detailPanelNode) return;
+
+      detailPanelNode.querySelectorAll(".mini-v2-marquee-value").forEach(node => {
         const textNode = node.querySelector(".mini-v2-marquee-text");
         if (!textNode) return;
 
-        if (node._miniV2MarqueeAnimation) {
-          node._miniV2MarqueeAnimation.cancel();
-          node._miniV2MarqueeAnimation = null;
-        }
-
-        textNode.style.transform = "translateX(0)";
-        if (reducedMotionMq.matches) return;
+        resetMarquee(node);
+        if (!getSelectedGroup() || reducedMotionMq.matches || !node.getClientRects().length || node.clientWidth <= 0) return;
 
         const overflowAmount = Math.ceil(textNode.scrollWidth - node.clientWidth);
         if (overflowAmount <= 1) return;
@@ -2516,13 +3025,14 @@
     }
 
     function matchesStructuredFilters(group, filterState, copy = null) {
-      if (filterState.sizes.length && !filterState.sizes.includes(group.size || "n/a")) return false;
-      if (filterState.creatureTypes.length && !filterState.creatureTypes.includes(group.creatureType || "n/a")) return false;
-      if (filterState.roles.length && !filterState.roles.includes(group.role || "n/a")) return false;
-      if (filterState.sexes.length && !filterState.sexes.includes(group.sex || "n/a")) return false;
-      if (filterState.races.length && !filterState.races.includes(group.race || "n/a")) return false;
+      if (filterState.sizes.length && !filterState.sizes.includes(group.size)) return false;
+      if (filterState.creatureTypes.length && !filterState.creatureTypes.includes(group.creatureType)) return false;
+      if (filterState.roles.length && !filterState.roles.includes(group.role)) return false;
+      if (filterState.sexes.length && !filterState.sexes.includes(group.sex)) return false;
+      if (filterState.races.length && !filterState.races.includes(group.race)) return false;
       if (filterState.paints.length && !filterState.paints.includes(getPaintValue(group.paint))) return false;
       if (filterState.set && group.set !== filterState.set) return false;
+      if (filterState.recordStatuses.length && !filterState.recordStatuses.includes(getRecordCompleteness(group, copy).status)) return false;
       if (filterState.stickers.length) {
         const copies = copy ? [copy] : group.copies;
         if (!copies.some(item => filterState.stickers.includes(getStickerStatus(item.sticker)))) return false;
@@ -2579,7 +3089,8 @@
         races: [],
         paints: [],
         set: "",
-        stickers: []
+        stickers: [],
+        recordStatuses: []
       };
     }
 
@@ -2637,9 +3148,9 @@
       if (sortKey === "home") return compareText(left.home, right.home);
       if (sortKey === "size") return compareSizeValues(left.size, right.size);
       if (sortKey === "type") return compareText(left.creatureType, right.creatureType);
-      if (sortKey === "race") return compareText(left.race || "n/a", right.race || "n/a");
-      if (sortKey === "sex") return compareText(left.sex || "n/a", right.sex || "n/a");
-      if (sortKey === "role") return compareText(left.role || "n/a", right.role || "n/a");
+      if (sortKey === "race") return compareText(left.race, right.race);
+      if (sortKey === "sex") return compareText(left.sex, right.sex);
+      if (sortKey === "role") return compareText(left.role, right.role);
 
       return 0;
     }
@@ -2750,6 +3261,14 @@
       group.copies.forEach(copy => {
         delete state.draftLocations[copy.id];
       });
+    }
+
+    function getRecordCompleteness(group, copy = null) {
+      const missingFields = getMissingFieldLabels(group);
+      // The inspector describes the whole group; an individual browse row checks only its own sticker.
+      const copies = copy ? [copy] : group.copies;
+      const missingStickerCount = copies.filter(item => getStickerStatus(item.sticker) === "Missing").length;
+      return { missingFields, missingStickerCount, status: missingFields.length || missingStickerCount ? "Incomplete" : "Complete" };
     }
 
     function getMissingFieldLabels(group) {

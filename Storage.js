@@ -27,15 +27,32 @@ function parseSpreadsheetPreview_(tables) {
   Object.keys(PREVIEW_TABLE_COLUMNS_).forEach(function (title) {
     var columns = PREVIEW_TABLE_COLUMNS_[title];
     var rows = tables[title];
-    if (!Array.isArray(rows) || !rows.length || JSON.stringify(rows[0]) !== JSON.stringify(columns)) {
+    if (!Array.isArray(rows) || !Array.isArray(rows[0])) {
       throw new Error("Unexpected preview headers: " + title);
+    }
+    var headerIndexes = Object.create(null);
+    rows[0].forEach(function (key, index) {
+      if (typeof key !== "string" || columns.indexOf(key) < 0) {
+        throw new Error("Unexpected preview headers: " + title + " (unknown header: " + key + ")");
+      }
+      if (headerIndexes[key] !== undefined) {
+        throw new Error("Unexpected preview headers: " + title + " (duplicate header: " + key + ")");
+      }
+      headerIndexes[key] = index;
+    });
+    var missing = columns.filter(function (key) { return headerIndexes[key] === undefined; });
+    if (missing.length) {
+      throw new Error("Unexpected preview headers: " + title + " (missing: " + missing.join(", ") + ")");
     }
     records[title] = rows.slice(1).filter(function (row) {
       return row.some(function (value) { return String(value).trim() !== ""; });
     }).map(function (row) {
       if (row.length > columns.length) throw new Error("Unexpected preview columns: " + title);
       var record = {};
-      columns.forEach(function (key, index) { record[key] = row[index] == null ? "" : String(row[index]); });
+      columns.forEach(function (key) {
+        var value = row[headerIndexes[key]];
+        record[key] = value == null ? "" : String(value);
+      });
       return record;
     });
   });

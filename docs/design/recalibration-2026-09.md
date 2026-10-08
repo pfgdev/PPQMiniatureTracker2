@@ -9,19 +9,255 @@ but their proposed layouts and step numbers sometimes conflict with the accepted
 
 ## Current Direction: Imported Preview, No App Writes
 
-**Owner acceptance and next phase:** the owner reports that the imported preview
-looks extremely good and requested a Git checkpoint. Before enabling durable
-saving, review the long-term storage model rather than carrying forward every
-legacy spreadsheet convention. This is a design review, not permission to migrate
-IDs, move columns, or change field ownership yet.
+**October 8 follow-up: Manage Lists prototype.** The owner approved a restrained
+in-app dialog, consistent with the existing UI. A compact Lists button sits beside
+Dashboard (inside Collection at narrow widths). Following owner feedback, both
+have visible button boundaries: Lists is enabled and Dashboard/Soon is muted and
+disabled. Both retain 32px height without growing the 56px summary row.
+The native modal retains the
+underlying editor, selection, and scroll; it has its own scrolling content,
+keyboard focus containment, Escape/Done dismissal, and reduced-motion support.
+It does not shift the page or change the inspector layout. At narrow desktop
+widths the summary uses the existing shorter collection-count wording to fit.
 
-Review priorities: retain existing immutable group/copy IDs but choose a
-server-generated identity scheme for new records; map fields by validated header
-names rather than column positions; confirm which properties belong to a group
-versus a physical copy (especially Paint); consider stable catalog IDs for Sets
-and Locations so renames do not break references; and separate missing/not-applicable
-states from display text before writing them permanently. The current adapter
-requires exact column order, so do not rearrange the live storage tabs yet.
+- All editable catalogs are available: Size, Creature Type, Race, Sex, Role, Set,
+  Paint, and Locations. A navigation rail becomes one list selector on mobile.
+  Search, Add, Rename/Edit, and Remove stay in the same dialog, without nested
+  popups. Long names wrap within its list, not the main app's fixed-height cells.
+  Usage counts now share the main line at desktop dialog widths: ordinary rows
+  are about 44px rather than 64px tall. Location eligibility remains secondary
+  text, and phone layouts retain stacked metadata instead of squeezing controls.
+- Explicit list Add/Save/Remove is independent of the miniature draft. Added
+  choices appear immediately in dropdowns but are not automatically selected.
+  Discarding miniature changes does not discard applied catalog changes.
+  Done/Escape retains unfinished list form text without applying it; its Cancel
+  discards that text. All catalog changes remain browser-only and reset on reload.
+- Renaming relabels saved assignments, parked/active drafts and their baselines,
+  pending locations, active filters, and deletion Undo records. It does not change
+  miniature IDs, rewrite notes, merge groups, or create a dirty miniature draft.
+  Case-insensitive duplicate names and app-reserved values are rejected.
+- Removal consistently says Remove choice, including its confirmation button.
+  The explanation distinguishes removing a future choice from clearing existing
+  assignments: those remain valid and filterable. Once no saved miniature uses a
+  removed choice, it disappears from filters. An already-active criterion stays
+  visible until cleared, rather than silently changing the user's search. This
+  rule also applies to removed Home/current locations.
+  Removal has Undo; re-adding a removed name restores it instead of duplicating it.
+  Restore only re-enables a choice: it never reverts miniature fields or locations
+  changed since the removal. The owner explicitly confirmed this distinction.
+  Built-in n/a and Not specified choices are protected. Paint still does not offer
+  either of those sentinel values, but ordinary named statuses are data-driven.
+- Locations have shared names and a separate Also offer as a Home location flag.
+  New locations default to current-location-only. Home eligibility cannot be
+  removed while referenced, and a rename updates both Home/current references.
+
+Accepted future recovery direction: session Undo plus a Show removed / Restore
+path when persistent catalogs are implemented, without an automatic expiration.
+That persistent recovery UI/storage is not implemented yet. Current Undo has no
+timer and survives closing Lists, but all list changes/history reset on reload.
+
+This is a UX/behavior preview, not the durable catalog implementation. Catalog
+identifiers in this dialog are session-local; persistent catalog IDs, reference
+migration, concurrency validation, and write endpoints remain future work.
+No spreadsheet, schema, deployment, Git checkpoint, or permissions were changed
+by this follow-up. Await owner feedback on the dialog before committing to more UI.
+
+Verification: all 79 Chrome UI scenarios, 74 unit/import tests, and 13 real-data
+preview checks passed. Five focused list scenarios were rerun after refining
+removal-history cleanup and keyboard focus during Undo. Desktop/phone screenshots
+were reviewed with the actual long Set names. Checks include fixed dialog/page
+geometry, short windows, focus containment, reduced motion, preserved drafts,
+reference relabeling, hidden-choice recovery, and reload restoring the original
+612 copies / 496 groups. `git diff --check` passed. Hosting and real writes were
+not tested or enabled.
+
+Feedback-polish verification: 19 affected Chrome UI scenarios passed, including
+two new removal/reassignment/restore checks (81 scenarios now exist in the suite).
+All 74 unit/import tests and 13 real-data checks also passed. Header tests verify
+visible button boundaries, enabled/disabled distinction, 32px controls, unchanged
+56px summary height, and large counts through desktop/mobile breakpoints.
+Desktop and phone screenshots were reviewed. No Git push or clasp upload occurred.
+
+**Long-title layout follow-up:** the imported Paladin name exposed an implicit
+minimum-content grid width that expanded the whole inspector, not just its
+header. The detail stage now has an explicitly shrinkable column and header.
+Read-mode names reuse the existing marquee: pause two seconds, travel slowly,
+pause two seconds, reset. Names keep their original font and never ellipsize;
+Edit/Close and status badges retain their own space. The full name is also in
+the tooltip and DOM text. Resizing remeasures the marquee; Edit/close cancels it,
+and reduced-motion preference keeps it stationary. Editable names remain normal
+inputs with unclipped focus rings. No data or persistence behavior changes.
+
+Verification for this layout follow-up: all 83 Chrome UI scenarios, 74 unit/import
+tests, and 14 imported-data checks passed, including the exact Paladin entry from
+the owner's screenshot. Checks cover compact list rows, long names, unchanged
+header/button geometry, preserved font size, resize remeasurement, Edit/Discard,
+close/reopen, reduced motion, and the two-second-pause/reset timing. Screenshots
+were reviewed at desktop and phone sizes. No Git push or clasp upload occurred.
+
+**Completeness indicator follow-up:** Ready and the missing-field-count pills
+are replaced by a fixed 24px green check or amber exclamation mark. These now mean
+group record completeness, including stickers (see Record Status below), not
+whether changes are saved or copies are at Home. Hover,
+keyboard focus, or tap reveals an explanation; missing fields are named there
+rather than counted in the header. Escape, a second activation, or clicking
+outside dismisses it without closing the inspector. It is hoverable and stays
+inside the viewport without affecting layout. Changing groups, entering Edit,
+opening Lists, scrolling, or resizing clears stale explanations.
+Unsaved remains separate; New/Editing states and all validation rules remain
+unchanged. Both icons reserve identical space, retaining the long-title marquee
+and the header's existing height and action-button positions.
+
+Verification: all 85 Chrome UI scenarios, 74 unit/import tests, and 14 local
+imported-data checks passed. Added coverage includes invariant 24px icon/header
+geometry at desktop/phone widths, hoverable explanations, keyboard focus/Escape,
+real touch taps, viewport containment, and preservation of pending edits and
+selection. Desktop/phone screenshots were reviewed. `git diff --check` passed;
+no Git push, clasp upload, or spreadsheet write occurred.
+
+**Blank-value display follow-up:** the owner caught Quickling's blank Race being
+shown as n/a while Edit and the completeness indicator correctly retained a blank.
+Read-only shared fields and browse metadata now show Not entered in restrained
+amber for empty/null/whitespace values. This is a display label, not a catalog
+choice or a value written back to the record. Explicit n/a and Not specified keep
+their existing meanings and ordinary styling. Optional notes are not warnings.
+Home and Set no longer substitute Not specified/n/a for missing values; a named
+Set with no number explicitly says (# not entered). A number without a Set stays
+visible alongside Not entered rather than being lost or presented as complete.
+Categorical filters and Race/Sex/Role sorting use actual values rather than a
+synthetic n/a. Whitespace-only values do not create empty facet/Set choices.
+Editing, draft retention, save rules, and spreadsheet contents are unchanged.
+
+Verification: all 87 Chrome UI scenarios, 74 unit/import tests, and 14 local
+imported-data checks passed. Coverage includes blank/null/whitespace fields,
+explicit sentinel choices, filter/sort separation in both browse modes, optional
+notes, retained Set numbers, Edit/Discard and Save round trips, unchanged card
+geometry, and the actual Quickling record. Desktop and phone screenshots were
+reviewed. `git diff --check` passed. No Git push or clasp upload occurred.
+
+**Record Status follow-up:** More now contains a separate Complete/Incomplete
+section after Stickers, using the same tile layout, narrow-screen fallbacks, and
+bounded thin-scrollbar body. Assigned/Missing stays unchanged. Both/neither
+selected means any status; selected statuses combine with other criteria using
+AND. More's count and Clear include the new choices, global Clear resets them,
+and collection shortcut Back restores them with the previous browse context.
+
+A shared predicate drives filtering and the fixed-size header icon: missing
+descriptive fields or blank/whitespace stickers make a record incomplete.
+Explicit n/a stickers are resolved. Explicit Not specified/n/a details remain
+valid; named sets still require Set #. Away status, painting progress, optional
+notes, and unsaved location changes are not incomplete data. Groups require all
+copies to be resolved; Individuals check the displayed copy's sticker plus the
+shared group fields. Thus a complete individual can belong to an incomplete
+group. The inspector remains group-wide and its accessible label explicitly
+says Group record; the explanation names missing fields and counts copies needing
+stickers in this group, including siblings hidden by browse filters.
+
+Filters use applied records, not active/parked drafts. Save updates membership
+without closing the inspector; its existing outside-filter explanation appears
+when a repaired group no longer matches. Creation still permits a blank sticker,
+but that created record is now visibly incomplete. No new required fields or
+blocking save rules were introduced. No banner counter or persistent storage was
+added; all app changes still reset on reload.
+
+Verification: all 90 Chrome UI scenarios, 74 unit/import tests, and 15 local
+imported-data checks passed. New coverage exercises both browse scopes, mixed
+groups, AND/OR combinations, Clear/Back restoration, draft isolation, Save
+removing the last match without closing inspection, new unstickered entries,
+group-wide explanations, and imported Race/Set # omissions. More retains its
+width/alignment and keyboard focus with narrow or short windows, long catalogs,
+and space-consuming scrollbars. Desktop/phone screenshots were reviewed;
+`git diff --check` passed. No Git push, clasp upload, or spreadsheet write occurred.
+
+**Owner acceptance and next phase:** the owner reports that the imported preview
+looks extremely good. Git checkpoint `ab920a7` (`Add authoring workflows and
+imported collection preview`) is committed and pushed to `origin/main`. Before enabling durable
+saving, review the long-term storage model rather than carrying forward every
+legacy spreadsheet convention. The owner subsequently approved the contained
+implementation below, not ID migration, live sheet rearrangement, or app writes.
+
+**October 8 storage-design decisions:**
+
+- Keep Paint and Home at group level, alongside the shared descriptive fields,
+  Set/Set #, and group Notes. Most copies are prepainted or painted together.
+  Same-name groups with different Paint/Home are intentional, valid variants;
+  notes may describe exceptions. Do not automatically merge groups or derive
+  identity from their name/field combination. Copies retain their own identity,
+  parent group reference, sticker, Current Location, and individual Note.
+- The owner supports a standardized independent identity method. Recommend
+  retaining all imported IDs and issuing server-generated UUIDs only for new
+  records, with a duplicate check. Generate once; renaming, sorting, correcting a
+  sticker, or restoring must not change identity. Temporary `mock-*` IDs are not
+  the proposed permanent scheme. If moving copies between variant groups is
+  added later, preserve the copy IDs and stickers rather than recreating copies.
+- The legacy sheet retained deleted records/IDs for restoration until manual
+  purge. Recommend durable soft deletion (for example, `deletedAt`) with a Trash
+  view, retaining the complete records and group/copy relationships, not just IDs.
+  Current group Undo is browser-only; no persistent Trash exists. Group deletion
+  must not accidentally restore copies that were separately deleted beforehand.
+  Restore must reuse IDs, while permanent deletion is a separate explicit action.
+- Owner-confirmed deletion policy: deleted groups/copies must NOT reserve
+  stickers or participate in active duplicate checks, counts, search, or next-ID
+  suggestions. The owner may delete a group and assign its physical minis/stickers
+  to another group as the interim moving workflow. This supersedes the earlier
+  recommendation to reserve deleted stickers. Restore is a separate transition
+  back to active inventory and must check for reassignment at that point; never
+  silently duplicate or steal a sticker. Internal IDs and sticker codes are
+  separate: delete/recreate currently makes a new copy identity, whereas a future
+  explicit move operation should preserve the original physical copy identity.
+- Header-name-based mapping is the accepted direction, provided loading remains
+  efficient. Build one validated header map per table read and retain bulk reads;
+  reject missing/duplicate headers rather than silently guessing. This does not
+  require a particular physical column order. The adapter now implements this;
+  existing required header names remain exact, and unsupported headers fail
+  explicitly. No live tab was rearranged by this pass.
+- Stable Set/Location catalog IDs are desirable for safe renames, but should
+  follow or accompany a designed in-app way to add dropdown choices. Do not
+  treat sheet-only catalog editing as the finished workflow. Adding an option
+  and renaming an existing option are different operations; keep Home and
+  Current Location eligibility distinct without losing shared location identity.
+- Keep the missing/not-applicable sticker distinction on the storage checklist.
+  None of these decisions enables app writes, migrates data, or authorizes a
+  new Trash/catalog-management UI in this pass.
+
+Implementation references: Apps Script provides
+[`Utilities.getUuid()`](https://developers.google.com/apps-script/reference/utilities/utilities#getUuid()),
+and Google's [performance guidance](https://developers.google.com/apps-script/guides/support/best-practices)
+prioritizes minimizing service calls and using batch operations. Expected negligible
+header-map overhead at this collection size is an engineering assessment, not a benchmark.
+
+**October 8 contained implementation:** Storage.js maps all four tables by their
+validated header names without extra spreadsheet reads. It rejects missing,
+duplicate, blank, padded, and unknown headers, as well as data beyond the declared
+columns. Tests cover rearrangement, preserved blanks, opaque IDs, and same-name
+groups with separate Paint/Home. The historical first-import audit deliberately
+retains its exact-layout checks; it is not a general-purpose editor or a migration
+tool and must not be rerun to overwrite a rearranged destination.
+
+Deleted groups and their saved editor drafts no longer reserve stickers in the
+browser. Active records and active/parked drafts still do. On Undo, a conflicting
+active assignment or draft produces an inline explanation in Review Changes and
+leaves the deleted record, current editor, and assignments untouched. Releasing
+the conflicting assignment allows Undo to restore original IDs and drafts. This
+is a safeguard for the existing Undo, not a persistent Trash interface. Removing
+a copy within Edit remains staged: its saved sticker is released when Save applies
+the removal, not before.
+
+At this earlier checkpoint, server-generated permanent IDs, durable
+deletion/restoration and purge, and in-app dropdown additions/renames remained
+upcoming work; the catalog prototype above is the subsequent approved step.
+Paint/Home ownership and current
+app layout are unchanged. This pass adds no app write endpoint and changes no
+spreadsheet, deployment, or permissions. Upload is a separate owner action.
+
+Verification: 74 unit/import tests, all 73 Chrome UI scenarios, and 12 imported-data
+preview checks passed with no browser script errors. The actual-data suite reverses
+all four tables locally and asserts equivalent state before exercising the app;
+no remote sheet rearrangement is involved. The UI suite covers deleted-sticker
+reuse in existing/new groups, released saved and unapplied IDs, conflicts with
+active/parked drafts, and successful Undo after releasing a reused assignment.
+`git diff --check` also passed. No Git commit/push or clasp upload was performed
+for this implementation pass.
 
 **October 7 approved integration completed:** the owner confirmed preservation of
 all blanks/checked-out locations, separate Home/current-location catalogs, temporary
@@ -36,8 +272,9 @@ All authoring stays in memory, including preview sticker hints; reload reads the
 unchanged imported baseline. Full catalogs include unused Sets, with Home and
 Current Location separate. Failed loads show an error, not mock data. Verification:
 60 unit/CLI tests, 72 existing Chrome scenarios, and 11 actual-data preview checks
-passed. **No clasp upload, versioned deployment, permission change, or Git push
-was performed.** The owner must upload before the development site changes.
+passed. **No clasp upload, versioned deployment, or permission change was performed
+by the agent.** The initial integration pass did not push Git; the subsequent
+checkpoint is recorded above. Git updates do not upload the development site.
 The [integration handoff](collection-preview-integration-2026-10-07.md) records
 backups, exact writes, verification, authorization caveats, and the next checks.
 Earlier preparation-only statements below are historical checkpoints.

@@ -79,7 +79,365 @@ const firstCopy = '013-ZHESOL-01';
       }
     };
 
+    const recordFixture = () => {
+      const sample = JSON.parse(JSON.stringify(data));
+      sample.groups = Array.from({ length: 8 }, (_, index) => {
+        const group = JSON.parse(JSON.stringify(data.groups[0]));
+        Object.assign(group, { rootId: `record-${index}`, name: `Record ${index}`, notes: '', set: 'n/a', setNumber: '' });
+        const stickers = index === 2 ? ['B20', ' \t ', 'n/a'] : index === 3 ? ['', 'B31'] : [`B${index}0`];
+        group.copies = stickers.map((sticker, i) => ({ ...group.copies[0], id: `record-${index}-${i}`, miniNumber: i + 1, sticker, note: '' }));
+        if ([1, 3].includes(index)) group.race = '';
+        if (index === 0) group.race = 'Not specified';
+        if (index === 4) {
+          group.paint = false;
+          group.copies[0].sticker = ' N/A ';
+          group.copies[0].currentLocation = 'Quest Minis';
+        }
+        if (index === 5) group.paint = 'Work in Progress';
+        if ([6, 7].includes(index)) { group.set = 'Lords of Madness'; group.setNumber = index === 6 ? '' : '0'; }
+        return group;
+      });
+      return sample;
+    };
+
+    const listAction = name => page.locator(`[data-list-action="${name}"]`);
+    const lists = async () => {
+      const trigger = page.locator('[data-action="open-lists"]:visible');
+      if (!await trigger.count()) await page.locator('[data-summary-panel="collection"]').click();
+      await page.locator('[data-action="open-lists"]:visible').click();
+      await page.waitForTimeout(180);
+    };
+    const listCategory = async key => {
+      const nav = page.locator(`[data-list-key="${key}"]`);
+      if (await nav.isVisible()) await nav.click();
+      else await page.locator('#miniV2ListsPicker').selectOption(key);
+    };
+    const listRow = name => page.locator('.mini-v2-list-choice').filter({
+      has: page.getByText(name, { exact: true })
+    });
+    const addChoice = async (key, name, home = false) => {
+      await listCategory(key); await listAction('add').click();
+      await page.locator('#miniV2ListName').fill(name);
+      if (key === 'locations') await page.locator('#miniV2ListHome').setChecked(home);
+      await listAction('save').click();
+    };
+
+    await check('list manager fits desktop and mobile without moving the page, losing drafts or leaking focus', async () => {
+      for (const width of [1440, 980, 820, 819, 390, 320]) {
+        await page.setViewportSize({ width, height: 900 });
+        await fresh(); await open(soldier); await action('edit-mini').click();
+        await page.locator('[data-edit-field="notes"]').fill('Keep this miniature draft');
+        await page.locator(width >= 820 ? '[data-action="open-lists"]:visible' : '[data-summary-panel="collection"]').scrollIntoViewIfNeeded();
+        const geometry = () => page.evaluate(() => ['.mini-v2-top-card', '.mini-v2-list-header', '.mini-v2-detail-header'].map(selector => {
+          const box = document.querySelector(selector).getBoundingClientRect();
+          return { width: box.width, height: box.height, left: box.left, top: box.top };
+        }));
+        const before = await geometry();
+        await lists();
+        const dialog = page.locator('#miniV2ListsDialog');
+        assert.deepEqual(await geometry(), before, `opening lists must not move the app at ${width}`);
+        const box = await dialog.boundingBox();
+        assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= 900);
+        assert.ok(await dialog.evaluate(n => n.scrollWidth <= n.clientWidth));
+        const initialHeight = box.height;
+        for (const key of ['size', 'paint', 'locations', 'set']) {
+          await listCategory(key);
+          assert.equal((await dialog.boundingBox()).height, initialHeight);
+        }
+        for (let i = 0; i < 18; i++) {
+          await page.keyboard.press('Tab');
+          assert.ok(await dialog.evaluate(n => n.contains(document.activeElement)), 'modal focus must stay inside');
+        }
+        await page.mouse.click(1, 1);
+        assert.equal(await dialog.isVisible(), true, 'backdrop clicks must not discard work or reach the page');
+        assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Keep this miniature draft');
+        if (process.env.SCREENSHOT_PATH && [1440, 390].includes(width)) await page.screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-lists-${width}.png`)
+        });
+        await page.keyboard.press('Escape');
+        await settle();
+        assert.equal(await dialog.isVisible(), false);
+        assert.deepEqual(await geometry(), before);
+        assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Keep this miniature draft');
+        assert.ok(await page.evaluate(() => document.activeElement.matches('[data-action="open-lists"], [data-summary-panel="collection"]')));
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('list usage shares a compact desktop row without squeezing long names or mobile actions', async () => {
+      const many = JSON.parse(JSON.stringify(data));
+      const longName = 'Mordenkainen Presents Monsters of the Multiverse - Extended Collector Edition';
+      many.catalogs = { set: [...new Set(many.groups.map(group => group.set)),
+        ...Array.from({ length: 60 }, (_, i) => `Collection ${String(i).padStart(2, '0')}`), longName] };
+      for (const width of [1440, 820, 390, 320]) {
+        await page.setViewportSize({ width, height: 900 });
+        await fresh(makeHtml(many)); await lists(); await listCategory('set');
+        const row = listRow('Collection 00');
+        await row.scrollIntoViewIfNeeded();
+        const size = await row.evaluate(node => {
+          const box = node.getBoundingClientRect();
+          const name = node.querySelector('.mini-v2-list-choice-name').getBoundingClientRect();
+          const meta = node.querySelector('.mini-v2-list-choice-meta').getBoundingClientRect();
+          return { height: box.height, sameLine: Math.abs((name.top + name.bottom - meta.top - meta.bottom) / 2) < 1,
+            ordered: meta.left >= name.right };
+        });
+        if (width >= 820) {
+          assert.ok(size.sameLine && size.ordered);
+          assert.ok(size.height <= 46, 'ordinary rows should be substantially shorter than the old 64px layout');
+        }
+        await page.locator('#miniV2ListsSearch').fill(longName);
+        assert.equal(await listRow(longName).locator('.mini-v2-list-choice-name').textContent(), longName);
+        assert.equal(await listRow(longName).evaluate(node => {
+          const box = node.getBoundingClientRect();
+          return [...node.querySelectorAll('span, button')].every(child => {
+            const bounds = child.getBoundingClientRect();
+            return bounds.left >= box.left - 1 && bounds.right <= box.right + 1 && child.scrollWidth <= child.clientWidth + 1;
+          });
+        }), true);
+        await listCategory('locations');
+        assert.equal(await page.locator('.mini-v2-list-choice-context').first().innerText(), 'Home + current location');
+        assert.ok(await page.locator('#miniV2ListsDialog').evaluate(n => n.scrollWidth <= n.clientWidth));
+        await listCategory('set');
+        if (process.env.SCREENSHOT_PATH && [1440, 390].includes(width)) await page.screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-compact-lists-${width}.png`)
+        });
+        await listAction('close').click();
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('list additions cover all property catalogs and do not select values or disappear on miniature Discard', async () => {
+      await fresh(); await open(soldier); await action('edit-mini').click(); await lists();
+      await listCategory('set'); await listAction('add').click();
+      assert.equal(await listAction('save').isDisabled(), true);
+      await page.locator('#miniV2ListName').fill(' lords of madness ');
+      assert.equal(await listAction('save').isDisabled(), true);
+      assert.match(await page.locator('#miniV2ListFormError').innerText(), /already exists/);
+      await listAction('cancel').click();
+      for (const key of ['size', 'creatureType', 'race', 'sex', 'role', 'set', 'paint']) {
+        const field = page.locator(`[data-edit-field="${key}"]`), before = await field.inputValue();
+        await addChoice(key, `Custom ${key}`);
+        assert.equal(await field.inputValue(), before);
+        assert.equal(await field.locator('option').evaluateAll((nodes, value) => nodes.some(n => n.value === value), `Custom ${key}`), true);
+      }
+      await listAction('close').click(); await action('discard-edit').click(); await action('edit-mini').click();
+      await page.locator('[data-edit-field="paint"]').selectOption('Custom paint');
+      await action('save-edit').click();
+      assert.equal(await action('edit-mini').isVisible(), true);
+      await page.locator('button[data-facet-key="more"]').click();
+      assert.equal(await page.locator('[data-facet-kind="paints"][data-facet-value="Custom paint"]').count(), 1);
+      await page.keyboard.press('Escape'); await lists();
+      await listCategory('set'); await listAction('add').click();
+      await page.locator('#miniV2ListName').fill('Unfinished list name');
+      await listAction('close').click(); await lists();
+      assert.equal(await page.locator('#miniV2ListName').inputValue(), 'Unfinished list name');
+      await listAction('cancel').click();
+      assert.equal(await listRow('Unfinished list name').count(), 0);
+    });
+
+    await check('list renames update saved data, draft baselines, filters and deletion Undo without losing IDs', async () => {
+      await fresh(); await open(soldier); await action('edit-mini').click();
+      await page.locator('[data-edit-field="notes"]').fill('Parked notes');
+      await action('close-detail').click();
+      await page.locator('button[data-facet-key="more"]').click();
+      await page.locator('#miniV2SetFilter').selectOption('Lords of Madness');
+      await page.keyboard.press('Escape'); await lists(); await listCategory('set');
+      await listRow('Lords of Madness').locator('[data-list-action="rename"]').click();
+      await page.locator('#miniV2ListName').fill('Madness collection'); await listAction('save').click();
+      await listAction('close').click();
+      await page.locator('button[data-facet-key="more"]').click();
+      assert.equal(await page.locator('#miniV2SetFilter').inputValue(), 'Madness collection');
+      await page.keyboard.press('Escape'); await open(soldier);
+      assert.equal(await page.locator('[data-edit-field="set"]').inputValue(), 'Madness collection');
+      assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Parked notes');
+      await action('delete-group').click(); await action('confirm-delete-group').click();
+      await lists(); await listCategory('set');
+      await listRow('Madness collection').locator('[data-list-action="rename"]').click();
+      await page.locator('#miniV2ListName').fill('Restorable set'); await listAction('save').click();
+      await listAction('close').click(); await review('undo-delete-group');
+      assert.equal(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), soldier);
+      assert.equal(await page.locator('[data-edit-field="set"]').inputValue(), 'Restorable set');
+      assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), 'Parked notes');
+      await action('discard-edit').click(); await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="set"]').inputValue(), 'Restorable set');
+      assert.equal(await action('save-edit').isDisabled(), true, 'renaming a list must not leave a dirty miniature');
+    });
+
+    await check('list removals preserve existing assignments, exclude future choices and support Undo and restore', async () => {
+      await fresh(); await open(soldier); await action('edit-mini').click(); await lists(); await listCategory('set');
+      assert.equal(await listRow('Not specified').locator('[data-list-action="remove"]').count(), 0);
+      await listRow('Lords of Madness').locator('[data-list-action="remove"]').click();
+      assert.equal(await listAction('save').innerText(), 'Remove choice');
+      assert.match(await page.locator('#miniV2ListsForm').innerText(), /remains filterable while used/);
+      await listAction('save').click();
+      assert.equal(await page.locator('[data-edit-field="set"]').inputValue(), 'Lords of Madness');
+      await listAction('close').click(); await action('new-group').click();
+      assert.equal(await page.locator('[data-edit-field="set"] option').evaluateAll(nodes => nodes.some(n => n.value === 'Lords of Madness')), false);
+      await lists(); await listAction('undo').click();
+      assert.equal(await page.locator('[data-edit-field="set"] option').evaluateAll(nodes => nodes.some(n => n.value === 'Lords of Madness')), true);
+      await addChoice('set', 'Unused set');
+      await listRow('Unused set').locator('[data-list-action="remove"]').click();
+      assert.equal(await listAction('save').innerText(), 'Remove choice');
+      await listAction('save').click();
+      await listAction('add').click(); await page.locator('#miniV2ListName').fill('unused set');
+      assert.equal(await listAction('save').innerText(), 'Restore choice'); await listAction('save').click();
+      assert.equal(await listRow('Unused set').count(), 1);
+      assert.equal(await listAction('undo').isVisible(), false, 'restoring by name clears obsolete removal history');
+      await listRow('Unused set').locator('[data-list-action="remove"]').click(); await listAction('save').click();
+      await listRow('Lords of Madness').locator('[data-list-action="rename"]').click();
+      await page.locator('#miniV2ListName').fill('Unfinished rename');
+      await listAction('undo').click();
+      assert.equal(await page.locator('#miniV2ListName').inputValue(), 'Unfinished rename');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'miniV2ListName');
+      assert.equal(await listRow('Unused set').count(), 1);
+      await listAction('cancel').click();
+    });
+
+    await check('removed field choices leave filters after their last assignment changes and Restore never reverts edits', async () => {
+      await fresh(); await lists(); await listCategory('sex');
+      await listRow('Female').locator('[data-list-action="remove"]').click();
+      assert.equal(await listAction('save').innerText(), 'Remove choice');
+      await listAction('save').click(); await listAction('close').click();
+      const female = () => page.locator('[data-facet-kind="sexes"][data-facet-value="Female"]');
+      await page.locator('button[data-facet-key="sexes"]').click();
+      assert.equal(await female().count(), 1, 'removed values remain discoverable while assigned');
+      await female().click(); await page.keyboard.press('Escape');
+      const affected = data.groups.filter(group => group.sex === 'Female');
+      assert.ok(affected.length > 1);
+      for (const group of affected) {
+        await open(group.rootId); await action('edit-mini').click();
+        assert.equal(await page.locator('[data-edit-field="sex"]').inputValue(), 'Female');
+        await page.locator('[data-edit-field="sex"]').selectOption('Male');
+        await action('save-edit').click();
+      }
+      await page.locator('button[data-facet-key="sexes"]').click();
+      assert.equal(await female().getAttribute('aria-pressed'), 'true', 'do not silently clear an active filter');
+      await female().click();
+      assert.equal(await female().count(), 0, 'unused removed values disappear once the active filter is cleared');
+      await page.keyboard.press('Escape');
+      await action('close-detail').click();
+      await lists(); await listAction('undo').click(); await listAction('close').click();
+      for (const group of affected) {
+        await open(group.rootId); await action('edit-mini').click();
+        assert.equal(await page.locator('[data-edit-field="sex"]').inputValue(), 'Male');
+        assert.equal(await action('save-edit').isDisabled(), true);
+        await action('discard-edit').click(); await action('close-detail').click();
+      }
+      await page.locator('button[data-facet-key="sexes"]').click();
+      assert.equal(await female().count(), 1, 'restoration offers the choice again without reassigning miniatures');
+    });
+
+    await check('removed locations leave filters when unused and restoration preserves newer Home and copy locations', async () => {
+      await fresh(); await open(soldier); await action('edit-mini').click(); await lists();
+      await addChoice('locations', 'Temporary drawer', true);
+      await listAction('close').click();
+      await page.locator('[data-edit-field="home"]').selectOption('Temporary drawer');
+      await action('edit-all-home').click(); await action('save-edit').click();
+      await lists(); await listCategory('locations');
+      await listRow('Temporary drawer').locator('[data-list-action="remove"]').click();
+      await listAction('save').click(); await listAction('close').click();
+      await location('Temporary drawer');
+      await action('edit-mini').click();
+      await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await action('save-edit').click();
+      await location('all');
+      await action('toggle-location-menu').click();
+      assert.equal(await page.locator('[data-location-value="Temporary drawer"]').count(), 1, 'saved current locations still use it');
+      await page.keyboard.press('Escape');
+      await action('set-all-home').click(); await action('save-changes').click();
+      await action('toggle-location-menu').click();
+      assert.equal(await page.locator('[data-location-value="Temporary drawer"]').count(), 0);
+      await page.keyboard.press('Escape');
+      await lists(); await listAction('add').click();
+      await page.locator('#miniV2ListName').fill('Temporary drawer');
+      assert.equal(await listAction('save').innerText(), 'Restore choice');
+      await listAction('save').click(); await listAction('close').click();
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="home"]').inputValue(), 'Spare People');
+      for (const copy of data.groups.find(group => group.rootId === soldier).copies) {
+        assert.equal(await select(copy.id).inputValue(), 'Spare People');
+      }
+      assert.equal(await action('save-edit').isDisabled(), true);
+      await action('toggle-location-menu').click();
+      assert.equal(await page.locator('[data-location-value="Temporary drawer"]').count(), 1);
+    });
+
+    await check('location lists distinguish Home eligibility and rename saved and staged locations together', async () => {
+      await fresh(); await open(soldier);
+      await select(firstCopy).selectOption('Quest Minis');
+      await action('edit-mini').click(); await lists();
+      await addChoice('locations', 'New encounter box');
+      assert.equal(await page.locator('[data-edit-field="home"] option').evaluateAll(nodes => nodes.some(n => n.value === 'New encounter box')), false);
+      assert.equal(await select(firstCopy).locator('option').evaluateAll(nodes => nodes.some(n => n.value === 'New encounter box')), true);
+      await listRow('New encounter box').locator('[data-list-action="rename"]').click();
+      await page.locator('#miniV2ListHome').check(); await listAction('save').click();
+      assert.equal(await page.locator('[data-edit-field="home"] option').evaluateAll(nodes => nodes.some(n => n.value === 'New encounter box')), true);
+      await listRow('Spare People').locator('[data-list-action="rename"]').click();
+      assert.equal(await page.locator('#miniV2ListHome').isDisabled(), true);
+      await page.locator('#miniV2ListName').fill('People drawer'); await listAction('save').click();
+      assert.equal(await page.locator('[data-edit-field="home"]').inputValue(), 'People drawer');
+      assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+      await listRow('Quest Minis').locator('[data-list-action="rename"]').click();
+      await page.locator('#miniV2ListName').fill('Quest box'); await listAction('save').click();
+      await listAction('close').click(); await action('discard-edit').click();
+      assert.equal(await select(firstCopy).inputValue(), 'Quest box');
+      assert.equal(await select('013-ZHESOL-02').inputValue(), 'People drawer');
+      assert.equal(await action('save-changes').isDisabled(), false);
+      await action('reset-changes').click();
+      assert.equal(await select(firstCopy).inputValue(), 'People drawer');
+    });
+
+    await check('list paint renames preserve legacy assignments and list names render as text at short viewport heights', async () => {
+      await fresh(); await open(soldier); await action('edit-mini').click(); await lists(); await listCategory('paint');
+      await listRow('Painted').locator('[data-list-action="rename"]').click();
+      await page.locator('#miniV2ListName').fill('Finished'); await listAction('save').click();
+      assert.equal(await page.locator('[data-edit-field="paint"]').inputValue(), 'Finished');
+      assert.equal(await action('save-edit').isDisabled(), true);
+      await listAction('close').click(); await action('discard-edit').click(); await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="paint"]').inputValue(), 'Finished');
+      await lists();
+      const literal = '<img src=x onerror=alert(1)> & "Set"';
+      await addChoice('set', literal);
+      assert.equal(await listRow(literal).count(), 1);
+      assert.equal(await page.locator('#miniV2ListsRows img').count(), 0);
+      assert.equal(await page.locator('[data-edit-field="set"] option').evaluateAll((nodes, value) => nodes.some(n => n.value === value), literal), true);
+      for (const width of [844, 390]) {
+        await page.setViewportSize({ width, height: 400 });
+        await listCategory('locations'); await listAction('add').click();
+        await page.locator('#miniV2ListName').fill(`Short viewport ${width}`);
+        await page.locator('#miniV2ListHome').check();
+        await listAction('save').click();
+        assert.equal(await listRow(`Short viewport ${width}`).count(), 1);
+        const box = await page.locator('#miniV2ListsDialog').boundingBox();
+        assert.ok(box.y >= 0 && box.y + box.height <= 400);
+      }
+      await listAction('close').click();
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.emulateMedia({ reducedMotion: 'reduce' }); await lists();
+      assert.equal(await page.locator('#miniV2ListsDialog').evaluate(n => n.getAnimations().length), 0);
+      await listAction('close').click(); await page.emulateMedia({ reducedMotion: 'no-preference' });
+    });
+
     await check('collection banner stays one row with stable height, accessible recovery and a future dashboard', async () => {
+      const assertToolButtons = async () => {
+        const buttons = await page.locator('.mini-v2-summary-tools:visible > button').evaluateAll(nodes => nodes.map(node => {
+          const style = getComputedStyle(node), box = node.getBoundingClientRect();
+          return { disabled: node.disabled, border: style.borderColor, background: style.backgroundColor,
+            color: style.color, cursor: style.cursor, height: box.height, top: box.top, left: box.left, right: box.right };
+        }));
+        assert.equal(buttons.length, 2);
+        for (const button of buttons) {
+          assert.notEqual(button.border, 'rgba(0, 0, 0, 0)');
+          assert.notEqual(button.background, 'rgba(0, 0, 0, 0)');
+          assert.equal(button.height, 32);
+        }
+        assert.equal(buttons[0].disabled, true);
+        assert.equal(buttons[1].disabled, false);
+        assert.equal(buttons[1].cursor, 'pointer');
+        assert.notEqual(buttons[0].color, buttons[1].color);
+        assert.equal(buttons[0].top, buttons[1].top);
+        assert.ok(buttons[1].left - buttons[0].right >= 8);
+      };
       for (const width of [1440, 1100, 980, 820, 819, 600, 390, 360, 320]) {
         await page.setViewportSize({ width, height: 1000 });
         await fresh();
@@ -89,6 +447,8 @@ const firstCopy = '013-ZHESOL-01';
         const initial = await geometry();
         assert.match(await page.locator('.mini-v2-collection-total').textContent(), /28.*9/s);
         assert.equal(await page.locator('.mini-v2-dashboard:not(:disabled)').count(), 0);
+        assert.equal(await page.locator('.mini-v2-top-card-body').evaluate(node => node.getBoundingClientRect().height), 56);
+        if (width >= 820) await assertToolButtons();
         assert.ok(await banner.evaluate(node => {
           const bounds = node.getBoundingClientRect();
           return [...node.querySelectorAll('button')].filter(button => button.getClientRects().length).every(button => {
@@ -111,6 +471,10 @@ const firstCopy = '013-ZHESOL-01';
           assert.equal(await page.locator('#miniV2CollectionMenu .mini-v2-dashboard').isVisible(), true);
           const box = await page.locator('#miniV2CollectionMenu').boundingBox();
           assert.ok(box.x >= 0 && box.x + box.width <= width);
+          await assertToolButtons();
+          if (process.env.SCREENSHOT_PATH && width === 390) await page.screenshot({
+            path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-banner-tools-390.png')
+          });
           await page.keyboard.press('Escape');
         }
         await open(soldier);
@@ -133,7 +497,7 @@ const firstCopy = '013-ZHESOL-01';
       const base = large.groups[0];
       large.groups = Array.from({ length: 120 }, (_, i) => ({ ...base, rootId: `large-${i}`, name: `Miniature ${i}`,
         copies: Array.from({ length: 5 }, (_, j) => ({ ...base.copies[0], id: `large-${i}-${j}`, sticker: '', currentLocation: 'Quest Minis' })) }));
-      for (const width of [1440, 820, 390, 320]) {
+      for (const width of [1440, 980, 960, 959, 820, 390, 320]) {
         await page.setViewportSize({ width, height: 1000 });
         await fresh(makeHtml(large));
         assert.ok(await page.locator('.mini-v2-collection-total').evaluate(n => n.scrollWidth <= n.clientWidth), `large collection total at ${width}`);
@@ -1226,7 +1590,7 @@ const firstCopy = '013-ZHESOL-01';
       await page.locator('[data-edit-field="role"]').selectOption('Spellcaster');
       await action('save-edit').click();
       assert.doesNotMatch(await page.locator('#miniV2DetailHeaderTags').innerText(), /Unpainted/i);
-      assert.equal(await page.locator('.mini-v2-product-grid .mini-v2-read-card').last().locator('.mini-v2-read-value').innerText(), '—');
+      assert.equal(await page.locator('.mini-v2-product-grid .mini-v2-read-card').last().locator('.mini-v2-read-value').innerText(), 'Not entered');
       assert.match(await page.locator('.mini-v2-read-card').nth(5).innerText(), /<script>not executable<\/script>/);
       await action('edit-mini').click();
       assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), '');
@@ -1246,32 +1610,102 @@ const firstCopy = '013-ZHESOL-01';
       await page.setViewportSize({ width: 1440, height: 1000 });
     });
 
+    await check('blank metadata is visibly Not entered without changing data, optional notes or layout', async () => {
+      const fields = ['size', 'creatureType', 'race', 'sex', 'role', 'set', 'setNumber', 'paint', 'home'];
+      const geometry = () => page.locator('#miniV2DetailPanel').evaluate(panel => ({
+        header: panel.querySelector('.mini-v2-detail-header').getBoundingClientRect().height,
+        cards: [...panel.querySelectorAll('.mini-v2-read-card')].map(n => n.getBoundingClientRect().height),
+        summary: panel.querySelector('.mini-v2-inventory-summary').getBoundingClientRect().height
+      }));
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh(); await open(soldier);
+        const before = await geometry();
+        for (const value of ['', null, ' \t ']) {
+          const blank = JSON.parse(JSON.stringify(data));
+          for (const key of fields) blank.groups[0][key] = value;
+          blank.groups[0].notes = '';
+          blank.groups[0].copies[0].note = '';
+          await fresh(makeHtml(blank)); await open(soldier);
+          const displayed = page.locator('#miniV2DetailContent .mini-v2-read-value');
+          assert.deepEqual(await displayed.allTextContents(), Array(8).fill('Not entered'));
+          assert.equal(await displayed.evaluateAll(nodes => nodes.every(n => n.classList.contains('mini-v2-missing-value'))), true);
+          const row = page.locator(`tr[data-group-id="${soldier}"]`);
+          for (const column of ['home', 'size', 'type', 'race', 'sex', 'role']) {
+            assert.equal(await row.locator(`.mini-v2-cell-${column}`).textContent(), 'Not entered');
+            assert.equal(await row.locator(`.mini-v2-cell-${column}`).getAttribute('title'), 'Not entered');
+          }
+          assert.equal(await page.locator('.mini-v2-note-body').textContent(), 'No notes yet.');
+          assert.equal(await page.locator('.mini-v2-copy-note-value.mini-v2-missing-value').count(), 0);
+          assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record incomplete');
+          assert.deepEqual(await geometry(), before, `missing labels must not change layout at ${width}px`);
+          await action('edit-mini').click();
+          for (const key of fields) {
+            const input = page.locator(`[data-edit-field="${key}"]`);
+            assert.equal(await input.inputValue(), ['paint', 'setNumber'].includes(key) ? '' : value ?? '', key);
+            assert.equal(await input.locator('option[value="Not entered"]').count(), 0, 'a display placeholder is not a catalog choice');
+          }
+          await action('discard-edit').click(); await settle();
+          assert.deepEqual(await displayed.allTextContents(), Array(8).fill('Not entered'));
+          assert.deepEqual(await geometry(), before);
+        }
+        const missingRace = JSON.parse(JSON.stringify(data));
+        missingRace.groups[0].race = '';
+        await fresh(makeHtml(missingRace)); await open(soldier);
+        const race = page.locator('.mini-v2-detail-grid .mini-v2-read-card').nth(2).locator('.mini-v2-read-value');
+        if (process.env.SCREENSHOT_PATH) await page.locator('#miniV2DetailPanel').screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-blank-race-${width}.png`)
+        });
+        for (const choice of ['n/a', 'Not specified', '']) {
+          await action('edit-mini').click();
+          await page.locator('[data-edit-field="race"]').selectOption(choice);
+          await action('save-edit').click();
+          assert.equal(await race.textContent(), choice || 'Not entered');
+          assert.equal(await race.evaluate(n => n.classList.contains('mini-v2-missing-value')), !choice);
+          assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), choice ? 'Group record complete' : 'Group record incomplete');
+          await action('edit-mini').click();
+          assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), choice);
+          await action('discard-edit').click();
+        }
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
     await check('Set number is only missing for a named set and follows edits to set membership', async () => {
       await fresh();
       await open(data.groups.find(group => group.set === 'n/a').rootId);
-      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record complete');
       await open(soldier);
       await action('edit-mini').click();
       await page.locator('[data-edit-field="setNumber"]').fill('');
       await action('save-edit').click();
-      const status = page.locator('#miniV2DetailHeaderTags .mini-v2-detail-tag');
-      assert.equal(await status.getAttribute('title'), 'Missing: Set #');
+      const status = action('toggle-detail-status');
+      const tip = page.locator('#miniV2DetailStatusTip');
+      assert.equal(await status.getAttribute('aria-label'), 'Group record incomplete');
+      assert.equal(await tip.textContent(), 'Missing: Set #');
+      const setValue = page.locator('.mini-v2-set-field .mini-v2-read-value');
+      assert.equal(await setValue.textContent(), 'Lords of Madness (# not entered)');
+      assert.equal(await setValue.evaluate(n => n.classList.contains('mini-v2-missing-value')), true);
       await action('edit-mini').click();
       await page.locator('[data-edit-field="set"]').selectOption('n/a');
       await action('save-edit').click();
-      assert.match(await status.innerText(), /^Ready$/i);
+      assert.equal(await status.getAttribute('aria-label'), 'Group record complete');
+      assert.equal(await setValue.textContent(), 'n/a');
+      assert.equal(await setValue.evaluate(n => n.classList.contains('mini-v2-missing-value')), false);
       await action('edit-mini').click();
       await page.locator('[data-edit-field="set"]').selectOption('');
       await action('save-edit').click();
-      assert.equal(await status.getAttribute('title'), 'Missing: Set');
+      assert.equal(await tip.textContent(), 'Missing: Set');
+      assert.equal(await setValue.textContent(), 'Not entered');
       await action('edit-mini').click();
       await page.locator('[data-edit-field="set"]').selectOption('Lords of Madness');
       await action('save-edit').click();
-      assert.equal(await status.getAttribute('title'), 'Missing: Set #');
+      assert.equal(await tip.textContent(), 'Missing: Set #');
       await action('edit-mini').click();
       await page.locator('[data-edit-field="setNumber"]').fill('0');
       await action('save-edit').click();
-      assert.match(await status.innerText(), /^Ready$/i);
+      assert.equal(await status.getAttribute('aria-label'), 'Group record complete');
+      assert.equal(await setValue.textContent(), 'Lords of Madness (0)');
 
       const unspecified = JSON.parse(JSON.stringify(data));
       unspecified.groups[0].set = ' N/A ';
@@ -1279,7 +1713,21 @@ const firstCopy = '013-ZHESOL-01';
       unspecified.groups[0].notes = '';
       await fresh(makeHtml(unspecified));
       await open(soldier);
-      assert.match(await status.innerText(), /^Ready$/i);
+      assert.equal(await status.getAttribute('aria-label'), 'Group record complete');
+      assert.equal(await setValue.textContent(), 'n/a');
+
+      unspecified.groups[0].set = '';
+      unspecified.groups[0].setNumber = '4a';
+      await fresh(makeHtml(unspecified)); await open(soldier);
+      assert.equal(await setValue.textContent(), 'Not entered (#4a)');
+      assert.equal(await tip.textContent(), 'Missing: Set');
+      await action('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="set"]').inputValue(), '');
+      assert.equal(await page.locator('[data-edit-field="setNumber"]').isDisabled(), true);
+      await page.locator('[data-edit-field="set"]').selectOption('Lords of Madness');
+      assert.equal(await page.locator('[data-edit-field="setNumber"]').inputValue(), '4a');
+      await action('discard-edit').click();
+      assert.equal(await setValue.textContent(), 'Not entered (#4a)');
     });
 
     await check('paint dropdown keeps its explicit order and preserves legacy values, drafts and saves', async () => {
@@ -1451,15 +1899,17 @@ const firstCopy = '013-ZHESOL-01';
             .map(n => ({ left: n.getBoundingClientRect().left, width: n.getBoundingClientRect().width }));
           const stickers = [...node.querySelectorAll('[data-facet-kind="stickers"]')]
             .map(n => ({ left: n.getBoundingClientRect().left, top: n.getBoundingClientRect().top, width: n.getBoundingClientRect().width }));
+          const records = [...node.querySelectorAll('[data-facet-kind="recordStatuses"]')]
+            .map(n => ({ left: n.getBoundingClientRect().left, top: n.getBoundingClientRect().top, width: n.getBoundingClientRect().width }));
           const style = n => {
             const css = getComputedStyle(n);
             return { font: css.fontFamily, size: css.fontSize, weight: css.fontWeight };
           };
           return { headings: [...node.querySelectorAll('.mini-v2-facet-group-label')].map(n => n.textContent),
-            paint, roles, stickers, setStyle: style(node.querySelector('select')),
+            paint, roles, stickers, records, setStyle: style(node.querySelector('select')),
             tileStyle: style(node.querySelector('.mini-v2-facet-tile-label')) };
         });
-        assert.deepEqual(layout.headings, ['Role', 'Set', 'Paint status', 'Stickers']);
+        assert.deepEqual(layout.headings, ['Role', 'Set', 'Paint status', 'Stickers', 'Record status']);
         assert.deepEqual(layout.setStyle, layout.tileStyle);
         assert.equal(layout.setStyle.weight, '600');
         assert.ok(layout.paint.every(n => n.top === layout.paint[0].top && n.height === layout.paint[0].height));
@@ -1470,6 +1920,12 @@ const firstCopy = '013-ZHESOL-01';
         assert.equal(layout.stickers.length, 2);
         assert.equal(layout.stickers[0].top, layout.stickers[1].top);
         layout.stickers.forEach((n, index) => {
+          assert.equal(n.left, layout.roles[index].left);
+          assert.equal(n.width, layout.roles[index].width);
+        });
+        assert.equal(layout.records.length, 2);
+        assert.equal(layout.records[0].top, layout.records[1].top);
+        layout.records.forEach((n, index) => {
           assert.equal(n.left, layout.roles[index].left);
           assert.equal(n.width, layout.roles[index].width);
         });
@@ -1518,6 +1974,126 @@ const firstCopy = '013-ZHESOL-01';
       await mode('groups');
     });
 
+    await check('Record status separates shared omissions and copy stickers while combining with the existing filters', async () => {
+      const sample = recordFixture();
+      const toggle = (kind, value) => page.locator(`[data-facet-kind="${kind}"][data-facet-value="${value}"]`).click();
+      const rows = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(nodes => nodes.map(n => n.dataset.copyId || n.dataset.groupId));
+      for (const individuals of [false, true]) {
+        await fresh(makeHtml(sample));
+        if (individuals) await mode('individuals');
+        await page.locator('button[data-facet-key="more"]').click();
+        await toggle('recordStatuses', 'Incomplete');
+        assert.deepEqual(await rows(), individuals
+          ? ['record-1-0', 'record-2-1', 'record-3-0', 'record-3-1', 'record-6-0']
+          : ['record-1', 'record-2', 'record-3', 'record-6']);
+        await toggle('stickers', 'Missing');
+        assert.deepEqual(await rows(), individuals ? ['record-2-1', 'record-3-0'] : ['record-2', 'record-3']);
+        assert.equal(await page.locator('button[data-facet-key="more"] .mini-v2-facet-count').innerText(), '2');
+        await toggle('stickers', 'Missing'); await toggle('stickers', 'Assigned');
+        assert.deepEqual(await rows(), individuals ? ['record-1-0', 'record-3-1', 'record-6-0'] : ['record-1', 'record-2', 'record-3', 'record-6']);
+        await action('clear-open-facet').click();
+        assert.equal((await rows()).length, individuals ? 11 : 8);
+        assert.equal(await page.locator('button[data-facet-key="more"]').getAttribute('aria-pressed'), 'false');
+        await toggle('recordStatuses', 'Complete');
+        assert.deepEqual(await rows(), individuals
+          ? ['record-0-0', 'record-2-0', 'record-2-2', 'record-4-0', 'record-5-0', 'record-7-0']
+          : ['record-0', 'record-4', 'record-5', 'record-7']);
+        await toggle('stickers', 'Missing');
+        assert.equal((await rows()).length, 0, 'Complete and Missing stickers must not match different siblings');
+        await toggle('recordStatuses', 'Incomplete');
+        assert.deepEqual(await rows(), individuals ? ['record-2-1', 'record-3-0'] : ['record-2', 'record-3']);
+        assert.equal(await page.locator('button[data-facet-key="more"] .mini-v2-facet-count').innerText(), '3');
+        await toggle('stickers', 'Missing');
+        assert.equal((await rows()).length, individuals ? 11 : 8, 'both status choices impose no status restriction');
+        await action('clear-open-facet').click(); await toggle('recordStatuses', 'Complete');
+        await page.locator('#miniV2SetFilter').selectOption('Lords of Madness');
+        assert.deepEqual(await rows(), [individuals ? 'record-7-0' : 'record-7']);
+        await action('clear-filters').click();
+        assert.equal((await rows()).length, individuals ? 11 : 8);
+        await page.locator('button[data-facet-key="more"]').click();
+        assert.equal(await page.locator('[data-facet-kind="recordStatuses"][aria-pressed="true"]').count(), 0);
+        await toggle('recordStatuses', 'Incomplete'); await toggle('stickers', 'Assigned');
+        const beforeShortcut = await rows();
+        await page.locator('.mini-v2-summary-desktop [data-collection-view="away"]').click();
+        assert.deepEqual(await rows(), ['record-4-0'], 'collection shortcuts temporarily clear both filters');
+        await action('clear-filters').click();
+        assert.deepEqual(await rows(), beforeShortcut, 'Back restores both record and sticker filters');
+        await page.locator('button[data-facet-key="more"]').click();
+        assert.equal(await page.locator('[data-facet-kind="recordStatuses"][data-facet-value="Incomplete"]').getAttribute('aria-pressed'), 'true');
+        assert.equal(await page.locator('[data-facet-kind="stickers"][data-facet-value="Assigned"]').getAttribute('aria-pressed'), 'true');
+      }
+    });
+
+    await check('Record status uses applied data and keeps the inspector and drafts when Save resolves the final issue', async () => {
+      await fresh(makeHtml(recordFixture()));
+      await page.locator('button[data-facet-key="more"]').click();
+      await page.locator('[data-facet-kind="recordStatuses"][data-facet-value="Incomplete"]').click();
+      await page.locator('button[data-facet-key="more"]').click();
+      await open('record-2'); await mode('individuals'); await settle();
+      assert.equal(await page.locator('.mini-v2-copy-row.is-target').getAttribute('data-detail-copy-id'), 'record-2-1');
+      await mode('groups'); await action('edit-mini').click();
+      const sticker = page.locator('[data-edit-copy-sticker="record-2-1"]');
+      await sticker.fill('n/a');
+      assert.equal(await page.locator('tr[data-group-id="record-2"]').count(), 1, 'drafts do not change browse completeness');
+      await action('close-detail').click(); await open('record-2');
+      assert.equal(await sticker.inputValue(), 'n/a');
+      await action('discard-edit').click();
+      assert.equal(await page.locator('#miniV2DetailStatusTip').textContent(), 'Stickers needed: 1 copy in this group.');
+      await action('edit-mini').click(); await sticker.fill('n/a'); await action('save-edit').click();
+      assert.equal(await page.locator('tr[data-group-id="record-2"]').count(), 0);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').textContent(), 'Record 2');
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record complete');
+      assert.match(await page.locator('#miniV2DetailContent').innerText(), /outside your current browse filters/);
+      await open('record-3'); await action('edit-mini').click();
+      await page.locator('[data-edit-field="race"]').selectOption('Human');
+      await action('save-edit').click();
+      assert.equal(await page.locator('#miniV2DetailStatusTip').textContent(), 'Stickers needed: 1 copy in this group.');
+      await mode('individuals'); await settle();
+      assert.deepEqual(await page.locator('tr[data-group-id="record-3"]').evaluateAll(nodes => nodes.map(n => n.dataset.copyId)), ['record-3-0']);
+      await action('edit-mini').click();
+      await page.locator('[data-edit-copy-sticker="record-3-0"]').fill('n/a'); await action('save-edit').click();
+      assert.equal(await page.locator('tr[data-group-id="record-3"]').count(), 0);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').textContent(), 'Record 3');
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record complete');
+      await action('new-group').click();
+      await page.locator('#miniV2EditName').fill('Incomplete until stickered');
+      await fillNewDetails(); await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      assert.equal(await page.locator('.mini-v2-name').filter({ hasText: 'Incomplete until stickered' }).count(), 0);
+      await action('save-edit').click();
+      assert.equal(await page.locator('.mini-v2-name').filter({ hasText: 'Incomplete until stickered' }).count(), 1);
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record incomplete');
+      assert.equal(await page.locator('#miniV2DetailStatusTip').textContent(), 'Stickers needed: 1 copy in this group.');
+    });
+
+    await check('Record status header explains group-wide omissions without flagging resolved stickers, paint progress or away copies', async () => {
+      const sample = recordFixture();
+      sample.groups[3].copies[1].sticker = '';
+      await fresh(makeHtml(sample));
+      const tip = page.locator('#miniV2DetailStatusTip');
+      for (const index of [0, 1, 2, 3, 4, 5, 6, 7]) {
+        await open(`record-${index}`);
+        const incomplete = [1, 2, 3, 6].includes(index);
+        assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), `Group record ${incomplete ? 'incomplete' : 'complete'}`);
+        if (!incomplete) assert.equal(await tip.textContent(), 'All group details are filled in; every copy has a sticker or explicit n/a.');
+        if (index === 1) assert.equal(await tip.textContent(), 'Missing: Race');
+        if (index === 2) assert.equal(await tip.textContent(), 'Stickers needed: 1 copy in this group.');
+        if (index === 3) {
+          assert.equal(await tip.textContent(), 'Missing: Race\nStickers needed: 2 copies in this group.');
+          await action('toggle-detail-status').click();
+          assert.equal(await tip.evaluate(n => getComputedStyle(n).whiteSpace), 'pre-line');
+          if (process.env.SCREENSHOT_PATH) await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-record-explanation.png') });
+        }
+        if (index === 6) assert.equal(await tip.textContent(), 'Missing: Set #');
+      }
+      await mode('individuals');
+      await page.locator('button[data-facet-key="more"]').click();
+      await page.locator('[data-facet-kind="recordStatuses"][data-facet-value="Complete"]').click();
+      await page.locator('button[data-facet-key="more"]').click();
+      await page.locator('tr[data-copy-id="record-2-0"] .mini-v2-name').click();
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record incomplete');
+      assert.equal(await tip.textContent(), 'Stickers needed: 1 copy in this group.', 'the header still explains the whole group, including hidden siblings');
+    });
+
     await check('facets include explicit Not specified and unfamiliar saved choices without treating blanks as that choice', async () => {
       const mixed = JSON.parse(JSON.stringify(data));
       for (const key of ['size', 'creatureType', 'race', 'sex', 'role', 'set']) mixed.groups[0][key] = 'Not specified';
@@ -1539,6 +2115,50 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await page.locator('.mini-v2-name').innerText(), mixed.groups[0].name);
       await page.locator('#miniV2SetFilter').selectOption('n/a');
       assert.deepEqual(await page.locator('.mini-v2-name').allTextContents(), [mixed.groups[1].name, mixed.groups[8].name]);
+    });
+
+    await check('n/a and Not specified filters never include blank metadata in either browse mode or sort', async () => {
+      const mixed = JSON.parse(JSON.stringify(data));
+      mixed.groups = ['', null, ' \t ', 'n/a', 'Not specified'].map((value, index) => {
+        const group = JSON.parse(JSON.stringify(data.groups[0]));
+        group.rootId = `value-${index}`;
+        group.name = index < 3 ? `Z blank ${index}` : index === 3 ? 'A not applicable' : 'B not specified';
+        for (const field of ['size', 'creatureType', 'race', 'sex', 'role', 'set']) group[field] = value;
+        group.setNumber = '';
+        group.copies = [{ ...group.copies[0], id: `value-${index}-01`, sticker: `A0${index}` }];
+        return group;
+      });
+      const rows = () => page.locator('.mini-v2-browse-table tbody tr').evaluateAll(nodes => nodes.map(n => n.dataset.groupId));
+      for (const browseMode of ['groups', 'individuals']) {
+        await fresh(makeHtml(mixed));
+        if (browseMode === 'individuals') await mode(browseMode);
+        for (const [facet, kind] of [['sizes', 'sizes'], ['creatureTypes', 'creatureTypes'], ['races', 'races'], ['sexes', 'sexes'], ['more', 'roles']]) {
+          await page.locator(`button[data-facet-key="${facet}"]`).click();
+          const options = page.locator(`[data-facet-kind="${kind}"]`);
+          assert.equal(await options.evaluateAll(nodes => nodes.every(n => n.dataset.facetValue.trim() && n.dataset.facetValue !== 'Not entered')), true);
+          await page.locator(`[data-facet-kind="${kind}"][data-facet-value="n/a"]`).click();
+          assert.deepEqual(await rows(), ['value-3'], `${browseMode}: ${kind} n/a is explicit, not a fallback`);
+          await page.locator(`[data-facet-kind="${kind}"][data-facet-value="Not specified"]`).click();
+          assert.deepEqual(await rows(), ['value-3', 'value-4']);
+          await page.locator(`[data-facet-kind="${kind}"][data-facet-value="n/a"]`).click();
+          assert.deepEqual(await rows(), ['value-4']);
+          await action('clear-open-facet').click();
+          assert.equal((await rows()).length, 5, 'clearing the filter must reveal missing entries again');
+        }
+        const set = page.locator('#miniV2SetFilter');
+        assert.deepEqual(await set.locator('option').evaluateAll(nodes => nodes.map(n => n.value)), ['', 'n/a', 'Not specified']);
+        for (const [value, expected] of [['n/a', ['value-3']], ['Not specified', ['value-4']]]) {
+          await set.selectOption(value);
+          assert.deepEqual(await rows(), expected);
+        }
+        await action('clear-open-facet').click();
+        await page.locator('button[data-facet-key="more"]').click();
+        for (const key of ['race', 'sex', 'role']) {
+          await page.locator(`[data-sort-key="${key}"]`).click();
+          assert.deepEqual(new Set((await rows()).slice(0, 3)), new Set(['value-0', 'value-1', 'value-2']),
+            `${browseMode}: sorting must use actual values instead of substituting n/a`);
+        }
+      }
     });
 
     await check('Set filter keeps focus and catalog choices after editing the final matching group', async () => {
@@ -1609,7 +2229,7 @@ const firstCopy = '013-ZHESOL-01';
               scrollbarWidth: body.offsetWidth - body.clientWidth,
               scrollbarStyle: getComputedStyle(body).scrollbarWidth,
               overflowing: body.scrollHeight > body.clientHeight, controls,
-              choiceLabelsFit: [...body.querySelectorAll('[data-facet-kind="paints"] .mini-v2-facet-tile-label, [data-facet-kind="stickers"] .mini-v2-facet-tile-label')]
+              choiceLabelsFit: [...body.querySelectorAll('[data-facet-kind="paints"] .mini-v2-facet-tile-label, [data-facet-kind="stickers"] .mini-v2-facet-tile-label, [data-facet-kind="recordStatuses"] .mini-v2-facet-tile-label')]
                 .every(n => n.scrollWidth <= n.clientWidth) };
           });
           assert.equal(measured.width, baseline.width, `same width at ${width}, large=${large}`);
@@ -1639,6 +2259,11 @@ const firstCopy = '013-ZHESOL-01';
             assert.equal(await page.locator('#miniV2FacetPopoverBody').evaluate(n => n.scrollTop), top);
           }
           assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+          const incomplete = page.locator('[data-facet-kind="recordStatuses"][data-facet-value="Incomplete"]');
+          await incomplete.focus();
+          await page.keyboard.press('Space'); await settle();
+          assert.equal(await incomplete.getAttribute('aria-pressed'), 'true');
+          assert.equal(await incomplete.evaluate(n => n === document.activeElement), true);
           if (process.env.SCREENSHOT_PATH) await page.screenshot({
             path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-more-${width}${large ? '-stress' : ''}.png`)
           });
@@ -1717,7 +2342,8 @@ const firstCopy = '013-ZHESOL-01';
         assert.equal(await page.locator('.mini-v2-browse-table tbody tr').count(), countBefore + (browseMode === 'groups' ? 1 : 2));
         assert.equal(await page.locator(`tr[data-group-id="${rootId}"]`).count(), browseMode === 'groups' ? 1 : 2);
         assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 2);
-        assert.match(await page.locator('.mini-v2-detail-tag').first().innerText(), /^Ready$/i);
+        assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record incomplete');
+        assert.equal(await page.locator('#miniV2DetailStatusTip').textContent(), 'Stickers needed: 1 copy in this group.');
         assert.equal(await page.locator('.mini-v2-copy-note-cell').first().innerText(), 'Green cloak');
       }
     });
@@ -1919,7 +2545,7 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await action('apply-next-sticker').innerText(), 'Apply M08');
     });
 
-    await check('next sticker skips saved, parked and undoable IDs and prevents cross-draft duplicates', async () => {
+    await check('next sticker skips active and parked IDs but releases deleted IDs, with safe Undo', async () => {
       const reserved = JSON.parse(JSON.stringify(data));
       reserved.groups[1].copies[0].sticker = 'E92';
       reserved.groups[3].copies[0].sticker = 'e94';
@@ -1933,26 +2559,32 @@ const firstCopy = '013-ZHESOL-01';
       await action('add-copy').click();
       await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('e91');
       await action('add-copy').click();
-      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E93');
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E92');
       await action('apply-next-sticker').click();
       await action('close-detail').click();
       await open(fighter);
       await action('edit-mini').click();
       await action('add-copy').click();
-      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E95');
-      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('e93');
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E93');
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('e92');
       await action('save-edit').click();
       assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
       await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').fill('');
       await action('apply-next-sticker').click();
-      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').inputValue(), 'E95');
+      assert.equal(await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').inputValue(), 'E93');
       await action('close-detail').click();
       await open(soldier);
       await action('add-copy').click();
-      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E96');
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E95');
       await action('apply-next-sticker').click();
       await review('undo-delete-group');
-      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E97');
+      assert.match(await page.locator('#miniV2ChangesMenu [role="status"]').innerText(), /Cannot undo yet: E92/);
+      assert.equal(await page.locator(`tr[data-group-id="${reserved.groups[1].rootId}"]`).count(), 0);
+      assert.equal(await page.locator('#miniV2EditName').inputValue(), 'Zhent Soldier', 'blocked Undo leaves the current editor intact');
+      await page.keyboard.press('Escape');
+      await page.locator('.mini-v2-editor-sticker[data-new-copy="true"]').nth(1).fill('');
+      await review('undo-delete-group');
+      assert.equal(await action('apply-next-sticker').innerText(), 'Apply E96');
       assert.equal(await page.locator('.mini-v2-editor-sticker').first().inputValue(), 'E92');
     });
 
@@ -2254,8 +2886,9 @@ const firstCopy = '013-ZHESOL-01';
         assert.equal(await page.locator(`[data-edit-field="${key}"]`).inputValue(), key === 'paint' ? 'Painted' : 'Not specified');
       }
       await page.locator('[data-edit-field="notes"]').fill('The character details are unknown.');
+      await page.locator('.mini-v2-editor-sticker').fill('n/a');
       await create.click();
-      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record complete');
       assert.equal(await page.locator('.mini-v2-set-field .mini-v2-read-value').innerText(), 'Not specified');
       await action('edit-mini').click();
       for (const key of Object.keys(labels)) {
@@ -2263,7 +2896,8 @@ const firstCopy = '013-ZHESOL-01';
       }
       await page.locator('[data-edit-field="race"]').selectOption('');
       await action('save-edit').click();
-      assert.equal(await page.locator('#miniV2DetailHeaderTags .mini-v2-detail-tag').getAttribute('title'), 'Missing: Race');
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record incomplete');
+      assert.equal(await page.locator('#miniV2DetailStatusTip').textContent(), 'Missing: Race');
       await action('edit-mini').click();
       assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), '');
       assert.equal(await page.locator('[data-edit-field="race"]').evaluate(n => n.selectedOptions[0].textContent), '');
@@ -2302,6 +2936,42 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await page.locator('.mini-v2-copy-table tbody tr').count(), 3);
     });
 
+    await check('a new group can reuse a deleted sticker without reviving or counting the deleted group', async () => {
+      await fresh();
+      await open(soldier);
+      await action('edit-mini').click();
+      await action('delete-group').click();
+      await action('confirm-delete-group').click();
+      assert.match(await page.locator('.mini-v2-collection-total').innerText(), /25.*8/);
+      await action('new-group').click();
+      await page.locator('#miniV2EditName').fill('Zhent Soldier');
+      await fillNewDetails({ home: 'Spare People', paint: 'Unpainted' });
+      const newRoot = await page.locator('[data-editor-root]').getAttribute('data-editor-root');
+      await page.locator('.mini-v2-editor-sticker').fill('a12');
+      assert.equal(await action('save-edit').isDisabled(), false);
+      await action('save-edit').click();
+      assert.equal(await action('edit-mini').isVisible(), true);
+      assert.match(await page.locator('.mini-v2-collection-total').innerText(), /26.*9/);
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"]`).count(), 0);
+      await page.locator('#miniV2SearchInput').fill('a12');
+      assert.equal(await page.locator('.mini-v2-browse-table tbody tr[data-group-id]').count(), 1);
+      assert.equal(await page.locator('.mini-v2-browse-table tbody tr[data-group-id]').getAttribute('data-group-id'), newRoot);
+      await page.locator('#miniV2SearchInput').fill('');
+      await review('undo-delete-group');
+      assert.match(await page.locator('#miniV2ChangesMenu [role="status"]').innerText(), /Cannot undo yet: A12/);
+      assert.match(await page.locator('.mini-v2-collection-total').innerText(), /26.*9/);
+      await page.keyboard.press('Escape');
+      await action('edit-mini').click();
+      await page.locator('.mini-v2-editor-sticker').fill('');
+      await action('save-edit').click();
+      await review('undo-delete-group');
+      assert.equal(await page.locator('[data-editor-root]').getAttribute('data-editor-root'), soldier);
+      assert.equal(await page.locator(`[data-edit-copy-sticker="${firstCopy}"]`).inputValue(), 'A12');
+      assert.equal(await page.locator(`tr[data-group-id="${newRoot}"]`).count(), 1);
+      assert.match(await page.locator('.mini-v2-collection-total').innerText(), /29.*10/);
+      assert.equal(await page.locator('#miniV2ChangesMenu [role="status"]').count(), 0);
+    });
+
     await check('copy controls preserve all four columns through editing, additions, removals and narrow scrolling', async () => {
       for (const width of [1440, 1100, 980, 390]) {
         await page.setViewportSize({ width, height: 1000 });
@@ -2336,6 +3006,195 @@ const firstCopy = '013-ZHESOL-01';
         });
       }
       await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('detail completeness icons keep one footprint for complete, one-missing and many-missing groups', async () => {
+      const geometry = () => page.locator('.mini-v2-detail-header').evaluate(header => {
+        const bounds = header.getBoundingClientRect();
+        return { height: bounds.height, children: [...header.querySelectorAll('#miniV2DetailHeaderTitle, .mini-v2-detail-status, .mini-v2-detail-header-actions')].map(node => {
+          const box = node.getBoundingClientRect();
+          return { left: box.left - bounds.left, top: box.top - bounds.top, width: box.width, height: box.height };
+        }) };
+      });
+      for (const width of [1440, 980, 390, 320]) {
+        await page.setViewportSize({ width, height: 1000 });
+        let baseline;
+        for (const fields of [[], ['race'], ['race', 'role', 'set', 'size']]) {
+          const sample = JSON.parse(JSON.stringify(data));
+          for (const field of fields) sample.groups[0][field] = '';
+          await fresh(makeHtml(sample)); await open(soldier);
+          const indicator = action('toggle-detail-status');
+          assert.equal(await indicator.getAttribute('aria-label'), fields.length ? 'Group record incomplete' : 'Group record complete');
+          assert.equal(await page.locator('#miniV2DetailHeaderTags').innerText(), '');
+          assert.equal(await indicator.getAttribute('aria-describedby'), 'miniV2DetailStatusTip');
+          const current = await geometry();
+          if (!baseline) baseline = current;
+          assert.deepEqual(current, baseline, `completeness must not change header geometry at ${width}px`);
+          assert.equal(current.children[1].width, 24);
+          assert.equal(current.children[1].height, 24);
+          await indicator.click();
+          const tip = page.locator('#miniV2DetailStatusTip');
+          assert.equal(await tip.isVisible(), true);
+          assert.equal(await tip.textContent(), fields.length > 1 ? 'Missing: Size, Race, Role, Set'
+            : fields.length ? 'Missing: Race' : 'All group details are filled in; every copy has a sticker or explicit n/a.');
+          assert.deepEqual(await geometry(), baseline, 'the explanation must not shift any header content');
+          const box = await tip.boundingBox();
+          assert.ok(box.x >= 0 && box.x + box.width <= width && box.y >= 0 && box.y + box.height <= 1000);
+          assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+          if (process.env.SCREENSHOT_PATH && [1440, 390].includes(width) && fields.length <= 1) await page.screenshot({
+            path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-status-${fields.length ? 'missing' : 'complete'}-${width}.png`)
+          });
+          await page.keyboard.press('Escape');
+          assert.equal(await tip.isVisible(), false);
+        }
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('detail status explanations support hover, keyboard and touch without losing selection or pending changes', async () => {
+      await fresh(); await open(soldier);
+      const indicator = action('toggle-detail-status');
+      const tip = page.locator('#miniV2DetailStatusTip');
+      await indicator.hover();
+      assert.equal(await tip.isVisible(), true);
+      await tip.hover(); await page.waitForTimeout(200);
+      assert.equal(await tip.isVisible(), true, 'the explanation must remain hoverable');
+      await page.mouse.move(1, 1); await page.waitForTimeout(200);
+      assert.equal(await tip.isVisible(), false);
+      await indicator.focus();
+      assert.equal(await tip.isVisible(), true);
+      await page.keyboard.press('Escape');
+      assert.equal(await tip.isVisible(), false);
+      assert.equal(await indicator.evaluate(node => node === document.activeElement), true);
+      await page.keyboard.press('Enter');
+      assert.equal(await tip.isVisible(), true);
+      await page.keyboard.press(' ');
+      assert.equal(await tip.isVisible(), false);
+      await page.keyboard.press('Tab');
+      await indicator.focus();
+      assert.equal(await tip.isVisible(), true);
+      await page.keyboard.press('Tab'); await page.waitForTimeout(200);
+      assert.equal(await tip.isVisible(), false, 'an unpinned explanation closes when focus leaves');
+
+      await select(firstCopy).selectOption('Quest Minis');
+      assert.match(await page.locator('#miniV2DetailHeaderTags .mini-v2-detail-tag').innerText(), /^Unsaved 1$/i);
+      assert.equal(await indicator.getAttribute('aria-label'), 'Group record complete', 'completeness is independent of pending location changes');
+      await indicator.click();
+      await page.mouse.click(1, 1);
+      assert.equal(await tip.isVisible(), false);
+      assert.equal(await page.locator('#miniV2DetailHeaderTitle').textContent(), 'Zhent Soldier');
+      assert.equal(await action('edit-mini').isVisible(), true, 'outside dismissal must not close the inspector');
+      assert.equal(await select(firstCopy).inputValue(), 'Quest Minis');
+      await indicator.click(); await action('edit-mini').click();
+      assert.equal(await tip.isVisible(), false);
+      assert.equal(await indicator.count(), 0);
+      await action('discard-edit').click();
+      await indicator.click(); await lists();
+      assert.equal(await tip.isVisible(), false);
+      await listAction('close').click();
+      await indicator.click(); await open(fighter);
+      assert.equal(await tip.isVisible(), false, 'changing groups clears the prior explanation');
+      await indicator.click();
+      await page.locator('#miniV2DetailScroll').evaluate(node => node.dispatchEvent(new Event('scroll')));
+      assert.equal(await tip.isVisible(), false);
+      await indicator.click(); await page.setViewportSize({ width: 1400, height: 1000 }); await settle();
+      assert.equal(await tip.isVisible(), false);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+
+      const touch = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
+      touch.on('pageerror', error => errors.push(error.message));
+      try {
+        await touch.setContent(html); await touch.waitForTimeout(550);
+        await touch.locator(`tr[data-group-id="${soldier}"]`).tap(); await touch.waitForTimeout(550);
+        const touchIndicator = touch.locator('[data-action="toggle-detail-status"]');
+        const touchTip = touch.locator('#miniV2DetailStatusTip');
+        await touchIndicator.tap();
+        assert.equal(await touchTip.isVisible(), true, 'the first tap must open, not immediately dismiss');
+        await touchIndicator.tap();
+        assert.equal(await touchTip.isVisible(), false);
+        await touchIndicator.tap(); await touch.waitForTimeout(250);
+        assert.equal(await touchTip.isVisible(), true);
+        await touch.locator('[data-action="close-detail"]').tap();
+        assert.equal(await touchTip.isVisible(), false);
+      } finally { await touch.close(); }
+    });
+
+    await check('long detail titles marquee within fixed header bounds without moving actions or widening the sidebar', async () => {
+      const title = 'Human Paladin of the Oath of Vengeance (Invisible) <Silver & Gold>';
+      const longTitle = JSON.parse(JSON.stringify(data));
+      longTitle.groups[0].name = title;
+      const geometry = () => page.locator('#miniV2DetailPanel').evaluate(panel => {
+        const bounds = panel.getBoundingClientRect();
+        const header = panel.querySelector('.mini-v2-detail-header').getBoundingClientRect();
+        return { headerHeight: header.height, panelWidth: bounds.width, headerWidth: header.width,
+          fontSize: getComputedStyle(panel.querySelector('#miniV2DetailHeaderTitle')).fontSize,
+          actions: [...panel.querySelectorAll('.mini-v2-detail-header-actions button')].map(node => {
+            const box = node.getBoundingClientRect();
+            return { left: box.left - bounds.left, top: box.top - bounds.top, width: box.width, height: box.height };
+          }) };
+      });
+      for (const width of [1440, 1100, 980, 820, 390, 320]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await fresh(); await open(soldier);
+        if (width >= 820) assert.equal(await page.locator('#miniV2DetailHeaderTitle').evaluate(n => !!n._miniV2MarqueeAnimation), false);
+        const before = await geometry();
+        await fresh(makeHtml(longTitle)); await open(soldier);
+        assert.deepEqual(await geometry(), before, `long title must preserve layout at ${width}`);
+        const name = page.locator('#miniV2DetailHeaderTitle');
+        assert.equal(await name.textContent(), title);
+        assert.equal(await name.getAttribute('title'), title);
+        assert.equal(await name.evaluate(n => getComputedStyle(n).textOverflow), 'clip');
+        assert.equal(await name.evaluate(n => !!n._miniV2MarqueeAnimation && n.clientWidth > 0), true);
+        assert.equal(await page.locator('.mini-v2-detail-header').evaluate(node => {
+          const bounds = node.getBoundingClientRect();
+          const title = node.querySelector('#miniV2DetailHeaderTitle').getBoundingClientRect();
+          const actions = node.querySelector('.mini-v2-detail-header-actions').getBoundingClientRect();
+          const tags = [...node.querySelectorAll('.mini-v2-detail-tag, .mini-v2-detail-status')].map(tag => tag.getBoundingClientRect());
+          return tags.every(tag => tag.left >= title.right && tag.right <= actions.left)
+            && title.right <= actions.left && actions.right <= bounds.right && node.scrollWidth <= node.clientWidth;
+        }), true);
+        assert.equal(await page.locator('.mini-v2-detail-stage').evaluate(n => n.scrollWidth <= n.clientWidth), true);
+        const cycle = await name.evaluate(node => {
+          const animation = node._miniV2MarqueeAnimation;
+          const timing = animation.effect.getTiming(), frames = animation.effect.getKeyframes();
+          animation.pause();
+          const sample = time => {
+            animation.currentTime = time;
+            return new DOMMatrixReadOnly(getComputedStyle(node.querySelector('.mini-v2-marquee-text')).transform).m41;
+          };
+          return { startPause: frames[1].offset * timing.duration, endPause: (1 - frames[2].offset) * timing.duration,
+            direction: timing.direction, atStart: sample(1000), atEnd: sample(timing.duration - 1000),
+            atReset: sample(timing.duration + 1000) };
+        });
+        assert.ok(Math.abs(cycle.startPause - 2000) < 1 && Math.abs(cycle.endPause - 2000) < 1);
+        assert.equal(cycle.direction, 'normal');
+        assert.ok(Math.abs(cycle.atStart) < 1 && cycle.atEnd < 0 && Math.abs(cycle.atReset) < 1);
+        assert.deepEqual(await geometry(), before);
+        if (process.env.SCREENSHOT_PATH && [1440, 390].includes(width)) await page.locator('#miniV2DetailPanel').screenshot({
+          path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-title-marquee-${width}.png`)
+        });
+        await action('edit-mini').click();
+        assert.equal(await name.evaluate(n => !!n._miniV2MarqueeAnimation), false);
+        assert.equal(await page.locator('#miniV2EditName').inputValue(), title);
+        await action('discard-edit').click(); await settle();
+        assert.equal(await name.evaluate(n => !!n._miniV2MarqueeAnimation), true);
+        await page.emulateMedia({ reducedMotion: 'reduce' }); await settle();
+        assert.equal(await name.evaluate(n => !!n._miniV2MarqueeAnimation), false);
+        assert.deepEqual(await geometry(), before);
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await action('close-detail').click();
+        assert.equal(await name.evaluate(n => !!n._miniV2MarqueeAnimation), false);
+        await open(soldier); await settle();
+        assert.equal(await name.evaluate(n => !!n._miniV2MarqueeAnimation), true);
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await settle();
+      const resized = await page.locator('#miniV2DetailHeaderTitle').evaluate(node => ({
+        overflow: Math.ceil(node.querySelector('.mini-v2-marquee-text').scrollWidth - node.clientWidth),
+        end: node._miniV2MarqueeAnimation.effect.getKeyframes().at(-1).transform
+      }));
+      assert.equal(resized.end, `translateX(${-resized.overflow}px)`);
     });
 
     await check('long individual and group notes use slow pause-scroll-pause-reset without altering layout', async () => {
@@ -2523,7 +3382,7 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await action('edit-mini').isVisible(), true, 'untouched legacy duplicates must not block unrelated corrections');
     });
 
-    await check('existing sticker corrections reserve saved and draft IDs through close and deletion undo', async () => {
+    await check('deletion releases saved and draft stickers; Undo waits for reused assignments to be released', async () => {
       await fresh();
       await open(soldier);
       await action('edit-mini').click();
@@ -2543,12 +3402,23 @@ const firstCopy = '013-ZHESOL-01';
       await action('confirm-delete-group').click();
       await open(fighter);
       await action('edit-mini').click();
+      const secondSticker = page.locator('.mini-v2-editor-sticker').nth(1);
+      await fighterSticker.fill('g90');
+      await secondSticker.fill('a12');
+      await action('save-edit').click();
+      assert.equal(await action('edit-mini').isVisible(), true, 'deleted baseline and draft stickers can both be reused');
+      await review('undo-delete-group');
+      assert.match(await page.locator('#miniV2ChangesMenu [role="status"]').innerText(), /A12, G90/);
+      assert.equal(await page.locator(`tr[data-group-id="${soldier}"]`).count(), 0);
+      await page.keyboard.press('Escape');
+      await action('edit-mini').click();
       for (const code of ['G90', 'A12']) {
-        await fighterSticker.fill(code);
-        await action('save-edit').click();
-        assert.match(await page.locator('#miniV2EditorError').innerText(), /already assigned/);
+        assert.ok(await page.locator('.mini-v2-editor-sticker').evaluateAll((nodes, value) =>
+          nodes.some(node => node.value.toUpperCase() === value), code));
       }
-      await action('discard-edit').click();
+      await fighterSticker.fill('C10');
+      await secondSticker.fill('C11');
+      await action('save-edit').click();
       await review('undo-delete-group');
       assert.equal(await page.locator(`[data-edit-copy-sticker="${firstCopy}"]`).inputValue(), 'G90');
       await action('save-edit').click();
@@ -2655,13 +3525,14 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(await page.locator('[data-edit-field="paint"]').inputValue(), 'Painted');
       await page.locator('[data-edit-field="notes"]').fill('');
       await action('save-edit').click();
-      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record complete');
       await action('new-group').click();
       await page.locator('#miniV2EditName').fill('No optional notes');
       await fillNewDetails();
       await page.locator('[data-edit-field="home"]').selectOption('Spare People');
+      await page.locator('.mini-v2-editor-sticker').fill('n/a');
       await action('save-edit').click();
-      assert.match(await page.locator('#miniV2DetailHeaderTags').innerText(), /^Ready$/i);
+      assert.equal(await action('toggle-detail-status').getAttribute('aria-label'), 'Group record complete');
     });
 
     await check('small-screen selections and draft recovery reveal the inspector without scrolling during editing', async () => {

@@ -1,5 +1,16 @@
 # Shared Editing: UX Options
 
+**Current status, October 8:** the app now reads the imported 2.0 snapshot while
+all edits remain browser-only. Deleted groups and their unapplied drafts release
+stickers immediately; they do not reserve them for Undo. Only an attempted restore
+checks for subsequent reuse, leaving both records untouched if there is a conflict.
+This supersedes the deleted-sticker reservation rules and mock-only data source
+described in the historical checkpoints below. The approved Manage Lists dialog
+now previews adding, renaming, and retiring dropdown choices, independently of
+miniature Save/Discard. Applied list changes and unfinished list forms are still
+browser-only; nothing writes to either spreadsheet. See the
+[current handoff](recalibration-2026-09.md#current-direction-imported-preview-no-app-writes).
+
 Prepared September 9, 2026 against `aff153d`; updated October 5 for the creation
 and copy-management prototype. The original options remain discussion history.
 Stay mock-only: creation, edits, and deletion use browser memory; no spreadsheet

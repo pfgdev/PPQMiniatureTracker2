@@ -18,7 +18,7 @@ const server = vm.createContext({});
 vm.runInContext(read('Code.js'), server);
 vm.runInContext(read('Storage.js'), server);
 const readback = snapshot.destination.sheets;
-const tables = readback.some(sheet => sheet.title === 'Groups')
+let tables = readback.some(sheet => sheet.title === 'Groups')
   ? Object.fromEntries(readback.map(sheet => [sheet.title, sheet.values])) : candidate.tables;
 server.SpreadsheetApp = { openById(id) {
   assert.equal(id, snapshot.destination.spreadsheetId);
@@ -26,6 +26,12 @@ server.SpreadsheetApp = { openById(id) {
     getDisplayValues: () => tables[title], getFormulas: () => [['']]
   }; } }; } };
 } };
+const originalData = server.buildSpreadsheetPreviewState_();
+// Exercise the actual imported records through the reordered-column adapter, without editing a sheet.
+tables = Object.fromEntries(Object.entries(tables).map(([title, rows]) => [title, rows.map(row => {
+  const cells = Array.from({ length: rows[0].length }, (_, index) => row[index] ?? '');
+  return cells.reverse();
+})]));
 const data = server.buildSpreadsheetPreviewState_();
 server.previewData = data;
 const serialized = vm.runInContext('serializeInitialState_(previewData)', server);
@@ -47,6 +53,10 @@ fs.mkdirSync(output, { recursive: true });
     // Click the visible name, not the center of the deliberately wide browse row.
     const openGroup = rootId => page.locator(`tr[data-group-id="${rootId}"] .mini-v2-name`).click();
     await page.setContent(html); await settle();
+    await check('all real-data columns can move without changing identities, blanks or catalog values', async () => {
+      const contents = ({ generatedAt, ...state }) => JSON.stringify(state);
+      assert.equal(contents(data), contents(originalData));
+    });
     await check('actual collection counts and group/individual browsing', async () => {
       assert.equal(await page.locator('.mini-v2-browse-table tbody tr[data-group-id]').count(), report.stats.groups);
       assert.match(await page.locator('.mini-v2-collection-total').innerText(), /612.*496/);
@@ -93,10 +103,78 @@ fs.mkdirSync(output, { recursive: true });
       assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
       await button('close-detail').click();
     });
+    await check('long imported titles keep controls and fields inside the sidebar and use the shared marquee', async () => {
+      const group = data.groups.find(group => group.name === 'Human Paladin of the Oath of Vengeance (Invisible)')
+        || data.groups.slice().sort((a, b) => b.name.length - a.name.length)[0];
+      await search(group.name); await openGroup(group.rootId); await settle();
+      for (const width of [1440, 980, 390]) {
+        await page.setViewportSize({ width, height: 1000 }); await settle();
+        const title = page.locator('#miniV2DetailHeaderTitle');
+        assert.equal(await title.textContent(), group.name);
+        assert.equal(await title.getAttribute('title'), group.name);
+        assert.equal(await title.evaluate(node => !!node._miniV2MarqueeAnimation), true);
+        assert.equal(await page.locator('#miniV2DetailPanel').evaluate(panel => {
+          const bounds = panel.getBoundingClientRect();
+          const header = panel.querySelector('.mini-v2-detail-header').getBoundingClientRect();
+          const actions = panel.querySelector('.mini-v2-detail-header-actions').getBoundingClientRect();
+          return header.right <= bounds.right && actions.right <= header.right
+            && panel.querySelector('.mini-v2-detail-stage').scrollWidth <= panel.clientWidth;
+        }), true);
+        if (width === 1440) await page.locator('#miniV2DetailPanel').screenshot({ path: path.join(output, 'preview-long-title.png') });
+      }
+      await button('edit-mini').click();
+      assert.equal(await page.locator('#miniV2EditName').inputValue(), group.name);
+      await button('discard-edit').click(); await button('close-detail').click();
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
     await check('preserved missing fields remain visible instead of being guessed', async () => {
       await search('Quickling'); await openGroup('090-QUI'); await settle();
-      assert.match(await page.locator('#miniV2DetailHeaderTags .mini-v2-detail-tag').getAttribute('title'), /Race/);
+      assert.equal(await button('toggle-detail-status').getAttribute('aria-label'), 'Group record incomplete');
+      assert.match(await page.locator('#miniV2DetailStatusTip').textContent(), /Race/);
+      const race = page.locator('.mini-v2-detail-grid .mini-v2-read-card').nth(2).locator('.mini-v2-read-value');
+      assert.equal(await race.textContent(), 'Not entered');
+      assert.equal(await race.evaluate(n => n.classList.contains('mini-v2-missing-value')), true);
+      assert.equal(await page.locator('tr[data-group-id="090-QUI"] .mini-v2-cell-race').textContent(), 'Not entered');
+      await page.locator('#miniV2DetailPanel').screenshot({ path: path.join(output, 'preview-quickling-missing-race.png') });
+      await button('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="race"]').inputValue(), '');
+      await button('discard-edit').click();
+      assert.equal(await race.textContent(), 'Not entered');
       await button('close-detail').click();
+      await page.locator('button[data-facet-key="races"]').click();
+      await page.locator('[data-facet-kind="races"][data-facet-value="n/a"]').click();
+      assert.equal(await page.locator('tr[data-group-id="090-QUI"]').count(), 0);
+      await button('clear-open-facet').click();
+      assert.equal(await page.locator('tr[data-group-id="090-QUI"]').count(), 1);
+      await page.locator('button[data-facet-key="races"]').click();
+    });
+    await check('Record status finds imported omissions in either browse mode and remains separate from stickers', async () => {
+      const blank = value => value == null || String(value).trim() === '';
+      const missingFields = group => ['name', 'home', 'size', 'creatureType', 'race', 'sex', 'role', 'paint', 'set'].some(field => blank(group[field]))
+        || (!['', 'n/a', 'not specified'].includes(String(group.set || '').trim().toLowerCase()) && blank(group.setNumber));
+      const incompleteGroups = data.groups.filter(group => missingFields(group) || group.copies.some(copy => blank(copy.sticker)));
+      const incompleteCopies = data.groups.flatMap(group => group.copies.filter(copy => missingFields(group) || blank(copy.sticker)).map(copy => copy.id));
+      assert.ok(incompleteGroups.some(group => group.rootId === '090-QUI'));
+      await search('');
+      await page.locator('button[data-facet-key="more"]').click();
+      const status = value => page.locator(`[data-facet-kind="recordStatuses"][data-facet-value="${value}"]`);
+      const rows = () => page.locator('.mini-v2-browse-table tbody tr');
+      await status('Incomplete').click();
+      assert.deepEqual(new Set(await rows().evaluateAll(nodes => nodes.map(n => n.dataset.groupId))), new Set(incompleteGroups.map(group => group.rootId)));
+      await page.locator('button[data-facet-key="more"]').click();
+      await page.locator('[data-browse-mode="individuals"]').click();
+      assert.deepEqual(new Set(await rows().evaluateAll(nodes => nodes.map(n => n.dataset.copyId))), new Set(incompleteCopies));
+      await page.locator('button[data-facet-key="more"]').click();
+      await page.locator('[data-facet-kind="stickers"][data-facet-value="Missing"]').click();
+      assert.equal(await rows().count(), 0, 'the imported omissions are descriptive fields, not blank stickers');
+      await button('clear-open-facet').click();
+      await status('Complete').click();
+      assert.equal(await rows().count(), report.stats.copies - incompleteCopies.length);
+      await page.locator('button[data-facet-key="more"]').click();
+      await page.locator('[data-browse-mode="groups"]').click();
+      assert.equal(await rows().count(), report.stats.groups - incompleteGroups.length);
+      await button('clear-filters').click();
+      assert.equal(await rows().count(), report.stats.groups);
     });
     await check('actual collection opens a visible inspector on a phone without page overflow', async () => {
       await page.setViewportSize({ width: 390, height: 844 });
@@ -193,6 +271,42 @@ fs.mkdirSync(output, { recursive: true });
       assert.equal(await page.locator('[data-edit-field="notes"]').inputValue(), awayGroup.notes);
       await button('add-copy').click();
       assert.equal(await button('apply-next-sticker').innerText(), 'Apply F55');
+      await button('discard-edit').click();
+    });
+    await check('real-data list manager fits long Set names and resets catalog changes on reload', async () => {
+      await page.goto('https://ppq-preview.test/'); await settle();
+      await search(longestSet.name); await openGroup(longestSet.rootId); await settle();
+      await button('edit-mini').click();
+      await page.locator('[data-action="open-lists"]:visible').click();
+      await page.locator('[data-list-key="set"]').click();
+      const names = await page.locator('.mini-v2-list-choice-name').allTextContents();
+      assert.ok(data.catalogs.set.every(value => names.includes(value)));
+      const row = page.locator('.mini-v2-list-choice').filter({ has: page.getByText(longestSet.set, { exact: true }) });
+      await row.locator('[data-list-action="rename"]').click();
+      const renamed = `${longestSet.set} (preview rename)`;
+      await page.locator('#miniV2ListName').fill(renamed);
+      await page.screenshot({ path: path.join(output, 'preview-lists-desktop.png') });
+      await page.locator('[data-list-action="save"]').click();
+      assert.equal(await page.locator('[data-edit-field="set"]').inputValue(), renamed);
+      assert.equal(await button('save-edit').isDisabled(), true, 'a catalog rename is independent of the miniature draft');
+      await page.locator('[data-list-action="add"]').click();
+      await page.locator('#miniV2ListName').fill('Temporary catalog choice');
+      await page.locator('[data-list-action="save"]').click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.locator('#miniV2ListsSearch').fill(longestSet.set);
+      const dialog = page.locator('#miniV2ListsDialog');
+      assert.ok(await dialog.evaluate(n => n.scrollWidth <= n.clientWidth));
+      assert.equal(await page.locator('.mini-v2-list-choice-name').innerText(), renamed);
+      await page.screenshot({ path: path.join(output, 'preview-lists-phone.png') });
+      await page.locator('[data-list-action="close"]').click();
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.reload(); await settle();
+      await search(longestSet.name); await openGroup(longestSet.rootId); await settle();
+      await button('edit-mini').click();
+      assert.equal(await page.locator('[data-edit-field="set"]').inputValue(), longestSet.set);
+      const restored = await page.locator('[data-edit-field="set"] option').evaluateAll(nodes => nodes.map(n => n.value));
+      assert.ok(!restored.includes(renamed) && !restored.includes('Temporary catalog choice'));
+      assert.match(await page.locator('.mini-v2-collection-total').innerText(), /612.*496/);
       await button('discard-edit').click();
     });
     await check('failed collection load displays a retry message instead of mock rows or a broken screen', async () => {
