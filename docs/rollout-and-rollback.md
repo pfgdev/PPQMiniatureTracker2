@@ -1,10 +1,11 @@
 # Live Saving Rollout And Rollback
 
-Status: production activation explicitly approved on October 9. A clean live
-build is prepared from the tested shared implementation. The owner confirmed
+Status: production activation explicitly approved and deployed on October 9.
+The real 2.0 workbook is migrated, with exact readback and private backups verified.
+Owner-only live version 4 is published; the owner's final hosted authorization,
+load and save/reload checks are still pending. The owner previously confirmed
 single saves, Save All, copy addition/removal, group deletion/restore, list
-operations and two-tab conflicts in the isolated rehearsal. Final live migration,
-deployment and hosted verification are recorded below as they happen.
+operations and two-tab conflicts in the isolated rehearsal.
 
 ## Activation Record
 
@@ -20,8 +21,24 @@ deployment and hosted verification are recorded below as they happen.
   and current locations. No test edits are imported. New live collection UUID:
   `d19c7f12-9faa-420b-a38f-949d4f155d20`, schema 2, starting revision 0.
 - Local evidence/configuration is under `.local/live/`, excluded from Git.
-- Pending: actual migration readback, six-tab baseline copy, owner-only versioned
-  deployment and the owner's final hosted save/reload.
+- Migration applied in one 27-request batch. Six-table readback parsed with the
+  actual persistence parser and matched the full candidate state exactly.
+  Frozen headers, text storage and header formatting were also checked.
+- Compatible private six-tab backup: [Live Baseline - October 9](https://docs.google.com/spreadsheets/d/1U6kd9o9G7HsH7D0MERRLoj96qxWDMdPDcsBhdAPf7uo/edit).
+  Sole-owner access and full state equality verified at revision 0.
+- Live app: [PPQ Miniature Tracker](https://script.google.com/macros/s/AKfycbzC3N1pZaLkodNlBfxnkBLquhP5faZSCB4NCN7fD0IFIrgSk5lBBNsl9Nav0eJV18hA/exec),
+  version 4, access `MYSELF`, execution `USER_DEPLOYING`. Uploaded and versioned
+  sources match the generated 14-file bundle exactly. Prior versioned preview
+  deployments were not changed; they are not schema-compatible with live data.
+  Use the new live URL rather than those old preview links.
+- The legacy workbook's modification time remains September 7. Its data was not
+  written. Rehearsal data and deployment were not modified by this rollout.
+- Code checkpoint: `b920028`. Verification: 357 automated tests and 16 clean-live
+  browser checks passed. Browser checks use simulated Google RPC/storage; they
+  do not substitute for the remaining hosted check.
+- Pending: owner opens the new URL, grants Google saving permission if requested,
+  confirms 612 miniatures / 496 groups without rehearsal UI, then makes one
+  reversible real save and reloads. No live user edit has been claimed verified.
 
 **October 9 scope decision:** The owner does not want an extensive backup/recovery
 rehearsal. It is not a launch requirement. Keep a fresh private workbook copy at

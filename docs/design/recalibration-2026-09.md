@@ -1,5 +1,25 @@
 # September 2026 Recalibration
 
+## October 9 Live Activation
+
+The owner approved going live after the private save and startup rehearsals.
+Production version 4 now uses the real 2.0 workbook with owner-only access.
+The migration preserved the full 496-group / 612-copy imported collection,
+including 19 away copies and existing blanks; no rehearsal edits were promoted.
+Private pre-migration and schema-compatible baseline copies are verified.
+
+The clean bundle retains real save/retry/conflict protection and the fast raw
+template loader, but excludes rehearsal UI, browser test hooks, the simulator
+and timing reports. Root clasp now uploads generated `.local/live/app` files:
+run `node tools/build-live.cjs` before uploading source changes. The historical
+preview-only deployment instructions below are superseded.
+
+See [current development instructions](../development.md) and the
+[activation record](../rollout-and-rollback.md) for the live URL, exact identities,
+backup links and remaining owner-side authorization/save verification.
+
+## Historical Handoff
+
 Reviewed 2026-09-07 against commit `217a0d7` (`Refine detail pane inventory layout`).
 The worktree was clean at the start. The initial review changed documentation only;
 the follow-up stabilization below implements the confirmed fixes.

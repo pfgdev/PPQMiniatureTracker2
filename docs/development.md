@@ -6,6 +6,9 @@ The owner approved production activation after the hosted rehearsal. The live
 build targets the original 2.0 workbook, not the disposable test collection.
 Migration/deployment evidence and activation status are recorded in
 [rollout and rollback](rollout-and-rollback.md). Do not copy rehearsal data back.
+Version 4 is now published at the [owner-only live URL](https://script.google.com/macros/s/AKfycbzC3N1pZaLkodNlBfxnkBLquhP5faZSCB4NCN7fD0IFIrgSk5lBBNsl9Nav0eJV18hA/exec).
+The workbook migration and backup comparisons passed. The owner's final hosted
+authorization/load/save check is pending; old preview links are not the live app.
 
 Production and rehearsal share `tools/app/build.cjs`. `tools/app/live.cjs`
 removes rehearsal notices, timing UI, simulator code and browser test hooks,
@@ -33,6 +36,8 @@ and save switch. Recover it from the verified deployed `COLLECTION_CONFIG_`
 if setting up another machine. Do not run migration preparation again or invent
 a new collection identity. `tools/prepare-live.cjs` and `tools/deploy-live.mjs`
 are guarded one-time rollout tools, not everyday save or publish commands.
+`tools/verify-live.cjs` verifies captured baseline data locally, not current
+production data after users start saving. Never run preparation as a reset tool.
 
 `clasp push` updates HEAD and `/dev`, not the versioned `/exec` app. For a live
 release, create a new Apps Script version and update the existing owner-only
