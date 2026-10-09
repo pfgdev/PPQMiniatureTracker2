@@ -1,5 +1,98 @@
 # Save, Upload, And Test
 
+## Live Build (October 9)
+
+The owner approved production activation after the hosted rehearsal. The live
+build targets the original 2.0 workbook, not the disposable test collection.
+Migration/deployment evidence and activation status are recorded in
+[rollout and rollback](rollout-and-rollback.md). Do not copy rehearsal data back.
+
+Production and rehearsal share `tools/app/build.cjs`. `tools/app/live.cjs`
+removes rehearsal notices, timing UI, simulator code and browser test hooks,
+while retaining the tested save transport, fast loader, authorization, retry and
+conflict handling. Its generated server has only `doGet` and
+`saveCollectionChanges` as public endpoints. Deployment access is owner-only.
+
+**Build before every upload:** root `.clasp.json` now uploads the 14 generated
+files in `.local/live/app`, not the raw preview fixtures in the repository root.
+Make UI changes in root `Scripts.html`/`Styles.html`, shared persistence changes
+in the root persistence modules, and server/build changes in `tools/app` or the
+shared templates under `tools/rehearsal`. Never edit generated files by hand.
+Root `Code.js`, `Storage.js`, `Index.html` and `appsscript.json` remain historical
+preview/test fixtures and are not the deployed entry point or manifest.
+
+```powershell
+node tools/build-live.cjs
+clasp.cmd status
+clasp.cmd push
+```
+
+The build fails without trusted `.local/live/config.json`; that ignored file
+contains the established script, workbook and collection identities plus owner
+and save switch. Recover it from the verified deployed `COLLECTION_CONFIG_`
+if setting up another machine. Do not run migration preparation again or invent
+a new collection identity. `tools/prepare-live.cjs` and `tools/deploy-live.mjs`
+are guarded one-time rollout tools, not everyday save or publish commands.
+
+`clasp push` updates HEAD and `/dev`, not the versioned `/exec` app. For a live
+release, create a new Apps Script version and update the existing owner-only
+live deployment after testing. Keep prior compatible versions for rollback.
+Before any source upload, inspect uncollected edits in Google's editor.
+
+Production-specific checks (use the installed Playwright path if necessary):
+
+```powershell
+node --test tests/live.test.cjs
+$env:LIVE_BUILD = '1'
+node tests/rehearsal-browser.cjs
+Remove-Item Env:LIVE_BUILD
+```
+
+Drafts are memory-only. Closing an inspector keeps its draft in this page;
+reload/navigation may discard it. Saves are explicit, not automatic. Save All
+includes pending work hidden by filters. Existing retry/conflict and unsaved
+warnings remain. Group notes wrap with line breaks; copy notes marquee.
+
+## Historical Development Notes
+
+Everything below records the earlier preview/rehearsal phases. Their upload
+commands and claims that the normal app cannot save are superseded by the live
+build instructions above; do not use them to reconfigure production.
+
+**Pre-activation checkpoint (October 9):** The normal app remained a read-only preview.
+The separate private rehearsal app now has real saves to its disposable test
+workbook only. Read/write authorization and the first hosted note save/reload
+have passed, with revision 1 and the stored note verified through Google readback.
+The owner also reports successful Save All, copy addition/removal, group deletion,
+list operations, restoration of a deleted test group and two-tab conflict handling
+in the hosted rehearsal. These are owner-reported checks. Full-workbook recovery
+is not an app feature; the [manual rollout/rollback procedure](rollout-and-rollback.md)
+is documented but has not been rehearsed against Google. Per the October 9 owner
+decision, that rehearsal is not a launch requirement. Keep recovery lightweight:
+a fresh private workbook copy at rollout, the legacy sheet untouched, and manual
+recovery/version history if needed. No backup UI, automation or mandatory schedule.
+Normal root `clasp push` does not update that test app.
+Version 6 confirmed saves reliably, but the owner measured unacceptable
+8-15-second waits. A timing screenshot traced 13.6 seconds to reading the sheet.
+Version 7 replaces that detailed-cell read with compact batched values while
+preserving fresh-read validation. On October 9 the owner manually estimated
+7-8 seconds to load and 2-3 seconds to save. Saves are substantially improved;
+these observations are not a latency guarantee.
+The private app is now version 14, with a hosted-confirmed startup fix. Version 10
+had failed because Google's processed HTML lost the snapshot comment marker;
+it was rolled back to 9 while separate synthetic diagnostics established the
+cause and checked alternatives. Version 14 reads raw template text before
+inserting the fresh snapshot, then creates HTML. The old v9 template loader is
+retained as an automatic fallback. Group notes wrap; individual notes marquee.
+The owner's actual-app report now shows 30 ms for page read/build (previous
+template evaluation: 1,925 ms), and 1,196 ms server total (previous: 2,603 ms).
+Sheet reading was 961 ms and browser initialization 127 ms in the new run. These
+are separate observed loads, not a controlled benchmark or full address-bar
+load timings. The owner had 18 EverQuest clients running; local contention may
+affect browser/perceived time, not explain server-measured durations. This
+optimization pass can stop here unless normal use exposes another concrete issue.
+Saving, fresh reads, UI assets, data and the original app are unchanged.
+
 ## The Everyday Commands
 
 Save your open files in the editor first. In the project's PowerShell terminal:
@@ -58,11 +151,12 @@ Use `clasp.cmd status` and `clasp.cmd push` if PowerShell blocks `clasp.ps1`.
 Storage.js is now an application file and must be included in the upload. Google
 may require spreadsheet authorization once; run `doGet` from the Apps Script
 editor if authorization or loading needs attention, and inspect the execution log.
-There is no deployed app writer. Backups and import evidence are recorded in
+There is no writer in this main app. Backups and import evidence are recorded in
 the [integration handoff](design/collection-preview-integration-2026-10-07.md).
 
-`Persistence.js` and `PersistenceAdapter.js` are currently an **offline rehearsal
-only**, excluded from clasp uploads and not called by the app. Their candidate
+`Persistence.js` and `PersistenceAdapter.js` remain excluded from root clasp
+uploads and are not called by the main app. The isolated rehearsal includes them
+through its separate staging build. Their candidate
 schema must not be pasted into
 the 2.0 workbook: the current reader still expects the imported preview schema.
 No extra upload/migration command is needed for this work. The
@@ -89,9 +183,9 @@ the Saving/Retry/conflict experience. Include this HTML file in the normal clasp
 upload (the allowlist and Index template already include it). Do NOT upload
 Persistence.js/PersistenceAdapter.js or enable the Advanced Sheets service for
 this preview. No Google save endpoint is called. The simulator still uses the
-current label-based preview records and temporary IDs; mapping the UI to the
-candidate-schema IDs, load baselines and real response envelope remains work
-before an approved disposable-sheet rehearsal.
+current label-based preview records and temporary IDs. The separate local-only
+contract bridge below now tests candidate-schema IDs, load baselines and the real
+response envelope. It is not enabled in the deployed preview.
 
 Every Save/Create, location Save, Save All, confirmed Delete/Undo, and list
 Add/Save/Remove/Undo waits for an acknowledgment. While waiting, the submitted
@@ -119,6 +213,153 @@ Each choice is consumed once, then returns to Normal. For an overlapping
 conflict, edit the miniature name yourself before saving. No production controls
 or persistent debug settings are introduced. A first-ever new record has no
 existing record to conflict with, so use an existing miniature/list choice.
+
+### Local Storage Connection
+
+The approved save UI now has an offline integration with the actual persistence
+model and adapter, not just the separate save-feedback simulator.
+`PersistenceContract.js` returns versioned, JSON-safe snapshots and save results
+under the adapter's lock. `PersistenceClient.html` maps displayed labels and draft
+IDs to catalog/group/copy IDs, keeps original record tokens, and reuses exactly
+the same submitted payload on retries. Acknowledgment remaps newly created IDs
+without losing the selected sidebar. Unrelated drafts are not rebased by another
+save. List saves remain independent; their labels update existing assignments
+without changing stored references.
+
+Both new files remain excluded from clasp, and Index does not include the client.
+The integration browser test supplies the script, a candidate snapshot, and an
+injected in-memory transport. Scripts refuses that mode unless the local test
+flag and transport are both present. Normal uploads still run the original
+read-only imported preview plus browser-memory save simulation. No additional
+clasp command, authorization, public RPC, migration, or sheet write is needed.
+
+Local checks (Playwright must be installed or supplied in `PLAYWRIGHT_MODULE`):
+
+```powershell
+node --test tests/persistence-client.test.cjs
+node --test tests/recovery.test.cjs tests/sticker-availability.test.cjs
+node tests/persistence-client-browser.cjs
+```
+
+These exercise Save/Create, Save All, location edits, list operations, deletion
+and session Undo, lost replies, explicit overwrite/discard, and reload from a
+fake workbook using the actual adapter. The optional ignored imported snapshot
+also runs all 496 groups through one retry-safe batch while preserving 612 copies,
+blank fields, IDs, and the 19 away locations. No test touches Google.
+
+### Reload And Recovery Rehearsal
+
+The local candidate now includes recovery of saved removals after reload:
+
+- **Lists > Show removed > Restore** re-enables a choice with its original ID.
+  Restoring a choice never changes miniature fields assigned to something else.
+- **Review Changes > Removed miniatures** opens a searchable Groups/Copies dialog.
+  Restoring retains original IDs, copy numbers, notes and locations. A group
+  restore does not also revive copies removed before the group was deleted.
+  Restore the parent group before restoring an individually removed copy.
+- Restore rechecks active sticker uniqueness and refuses to reclaim a sticker
+  now used elsewhere. Errors stay inline; uncertain responses retry the exact
+  request rather than duplicating records. Pending work on the same group must
+  be saved or discarded first; unrelated drafts remain intact.
+- If an edited group/copy was removed in another tab, explicit **Restore and
+  Save** can restore its identity and apply the draft in one validated write.
+  This is not autosave and never treats a restore-only response as saving edits.
+
+Next ID follows the owner's confirmed **earliest unused catalog ID** policy.
+If A through F are otherwise assigned but D11 is missing, keep offering D11,
+even after manually entering a G sticker. Derive availability from the ordered
+catalog minus active assignments, with temporary reservations for open/parked
+drafts. Discard releases those temporary reservations; a successful save makes
+the assignment survive reload. Deleted, blank and n/a copies do not reserve
+codes. No sequence pointer is stored and no extra request is made per Apply
+click. Concurrent saves still enforce uniqueness on the server. The old
+catalog-less mock fallback is not used by the imported collection or storage
+connection; existing localStorage sequence hints cannot override the catalog.
+
+The deployed preview can show the same recovery controls within its current
+session, but **reload there still resets everything**. Only the local fake
+workbook tests exercise durable recovery and saved sticker assignments. Drafts remain
+memory-only in both paths; they are not restored after reload. Deleted records,
+removed choices and receipts have no automatic expiration or purge.
+
+At this earlier checkpoint, owner-access verification, disposable migration and
+real-service save/reload tests were still pending; see the later hosted results
+below. Full-workbook recovery remains untested but is no longer a launch requirement.
+Neither persistence activation nor a production migration is authorized by this
+local rehearsal. No deployment, manifest, spreadsheet or Git push was performed.
+
+Read-only access audit (October 9): Google confirms the app project is bound to
+2.0. The sheet is link-readable, not publicly editable. Neither published app
+version is owner-only: version 1 permits anonymous users, and version 3 permits
+any signed-in Google user. Uploaded Code/Storage match the local preview reader;
+the offline persistence modules are not uploaded. No permission was changed.
+The recommended next step is a separately approved private workbook copy and
+owner-only test app with its own staging/clasp configuration, not a root-project
+push or a change to your existing app. See the
+[access audit and rehearsal plan](design/recalibration-2026-09.md#october-9-read-only-access-audit-and-test-setup-plan).
+
+**Later October 9 update:** The owner approved and we created the private backup,
+disposable schema-2 workbook, and separate `MYSELF` test app. Versions 1-4 were
+read-only. The owner confirmed 612 miniatures / 496 groups after granting read
+access. Version 5 now connects real saves only to that disposable workbook.
+Original app content/deployments, root clasp target, source cells and sharing are
+unchanged. See [private rehearsal setup](design/recalibration-2026-09.md#october-9-private-rehearsal-setup-created)
+for verified links, IDs, checks, and the remaining rehearsal steps.
+Local staging is `.local/rehearsal/app/`; do not use the root clasp project to
+update it. The initial migration helper is not a repeatable reset script.
+The owner completed **Allow test saves**, saved `Rehearsal save test` in Archmage's
+Notes and confirmed it survived reload. Google readback independently verified
+the note, revision 1 and its save receipt. The added line break is still stored;
+the old read-mode marquee hid it. Following the owner's clarification, version 9
+uses plain wrapping text for all group notes, preserving authored breaks and
+blank lines. Only individual sticker notes retain their single-line marquee.
+Copy-table geometry is unchanged. No stored-data repair was needed.
+
+The next location test revealed repeated unconfirmed-save messages despite
+successful writes. Version 6 now waits up to 90 seconds for confirmation, shows
+Still saving after 15 seconds without abandoning the reply, and computes record
+fingerprints in V8 rather than making hundreds of Utilities calls. Same-request
+Retry and conflict checks remain intact. The owner confirmed version 6 works but
+remains slow; its timing report showed reads consuming 13.6 of 14.3 seconds.
+Version 7 now reads metadata separately and cell values in one compact batch,
+with targeted formula checks and no cache. The owner reported approximately
+7-8 seconds to load and 2-3 seconds to save after this deployment. This latest
+report did not separately confirm a post-save reload; earlier hosted persistence
+checks passed. Next, profile remaining startup time separately, including server
+read/template work and browser startup, before selecting another optimization.
+The Rehearsal save timing object includes separate metadata/value-read times.
+Keep using the **Rehearsal: saves to test copy** app; no clasp command is needed.
+
+**Further owner testing (October 9):** Save All, adding/removing copies, deleting
+groups, list operations and restoring a deleted test group all looked good.
+The owner subsequently confirmed that two-tab conflicts also worked great.
+Record these flows as passed in the owner's hosted rehearsal; do not repeat the
+broad walkthrough by default. The report did not specify each list operation,
+reload after each action or new-group creation. Confirm
+any remaining coverage with targeted checks rather than assuming it passed.
+There is no full-backup restore control in the app. The private setup includes
+a verified pre-migration workbook copy, not an automatic backup system or a
+tested rollback procedure for the current six-tab storage format. The owner has
+declined an extensive recovery rehearsal as a launch requirement. Preserve a
+fresh private copy at rollout and the legacy sheet; handle recovery if needed.
+Version 8 fixes multiline-notes display and adds complete server-template plus
+browser startup timing; hosted startup diagnosis remains open. A local headless
+run with 496 groups / 612 copies initialized in 49-94 ms, with two animation
+frames reached in 84-141 ms. This excludes Google/server/network time and does
+not establish hosted latency. Startup measurement logs and the in-notice copy
+control are only in the isolated bundle, not the normal preview.
+
+The reusable isolated templates are in `tools/rehearsal/`; actual destination
+configuration stays in ignored staging. Local tests use fake services:
+
+```powershell
+node --test tests/rehearsal.test.cjs tests/rehearsal-hash.test.cjs tests/rehearsal-read.test.cjs
+node tests/rehearsal-browser.cjs
+```
+
+The browser test needs the same external Playwright setup described below. It
+checks actual generated app code without sending anything to Google. No backup
+restoration or production activation has been performed.
 
 Pending review preview (October 9): **Review Changes > Show pending changes**
 opens a temporary Groups view of draft values. Back occupies the existing Clear
@@ -268,8 +509,9 @@ committed-but-lost responses, identical-request replay, reordered rows/columns,
 grid expansion, and literal formula-looking text. It verifies targeted cell
 patches preserve unrelated values and formatting. October 9 result: all 222
 import/storage/domain/adapter checks passed, including the optional full imported
-collection rehearsal. Real Google service behavior, authorization, quotas and
-backup recovery still require a separately approved disposable-sheet rehearsal.
+collection rehearsal. These local checks did not prove Google service behavior,
+authorization, quotas or backup recovery. Hosted results follow below; backup
+recovery is untested and, by later owner decision, not a launch requirement.
 
 The save-flow tests cover asynchronous acknowledgment, draft retention, retry
 receipts, atomic batches, three-way field/copy conflict review, list independence,
@@ -277,7 +519,89 @@ deletion recovery and unchanged panel geometry. The browser suite uses a test-on
 inspection hook enabled only by its locally supplied `saveTestMode` state. Neither
 the simulator nor that hook accesses Sheets or stores drafts across reloads.
 
-Latest local results: 235 unit checks, all 100 regression scenarios (full run plus
-targeted continuations), 16 imported-preview checks and 14 save-flow browser
-checks passed. Desktop/phone feedback screenshots were inspected. No deployment
-or live spreadsheet save has been tested or enabled in this slice.
+Latest local results: 321 unit checks, all 100 regression scenarios (initial run
+plus continuation and targeted follow-up), 16 imported-preview checks, 19 save-flow
+checks and 18 storage-bridge browser checks passed. The latter include reload
+recovery and the owner's D11-first sticker rule. Desktop/phone recovery screenshots
+were inspected. Thirteen isolated-writer browser checks now pass,
+including consent gating, Save All, actual-wrapper reload, and retry behavior.
+The private writer's first Google-hosted note save/reload now passes, confirmed
+by the owner and bounded spreadsheet readback. Later location writes persisted
+but confirmation was unreliable until version 6. Version 7's compact reader is
+locally verified against a fresh capture; the owner now reports approximately
+2-3-second saves and 7-8-second startup. The owner has also exercised Save All,
+copy addition/removal, group deletion, lists, deleted-group restoration and
+two-tab conflicts. Version 8 fixes multiline notes and adds startup diagnostics.
+All 323 unit tests, 15 rehearsal browser checks and four focused preview checks
+passed; desktop/mobile note screenshots were inspected. Deployment readback is
+owner-only and original app content/deployments remain unchanged. Remaining work
+is hosted startup diagnosis, any targeted coverage gaps and a lightweight,
+explicitly approved rollout with a fresh workbook copy. A recovery rehearsal
+is not required. The main app remains read-only.
+
+Version 9 corrects the notes behavior after owner feedback: group notes expand
+downward and wrap, with no marquee even for a long single paragraph. Individual
+sticker notes keep the established one-line marquee. Fifteen rehearsal browser
+checks and four focused preview checks passed, including save/reload, blank
+lines, CRLF, long unbroken text, escaping and desktop/mobile table geometry.
+Screenshots were inspected; startup and persistence code are unchanged.
+
+Version 10 targets the measured template-generation bottleneck, not the save
+path. Build-time asset assembly produces byte-for-byte identical page HTML for
+the existing 496-group / 612-copy snapshot (apart from the appended timing report).
+All 328 unit tests and 16 rehearsal browser checks passed, including script-like
+text, literal replacement markers, missing/duplicate snapshot slots, denied access,
+consent, Save All and fresh reloads. Original app content/deployments and the root
+clasp target are verified unchanged; no workbook writes or Git push occurred.
+The iframe numbers do not measure Google's outer page. This local verification
+was subsequently superseded by the hosted failure below.
+
+**Version 10 rollback:** The owner received `RENDER_FAILED`. That code means the
+collection read succeeded but one of the subsequent page-building steps threw;
+the handler did not retain the underlying exception. It does not prove a specific
+parser, marker or data issue. Restored the existing private deployment and HEAD
+to owner-confirmed version 9, and reverted only the assistant's static-render
+changes locally. All 13 generated app files match version 9 by hash. The failed
+version remains preserved for investigation. All 325 unit tests and 16 rehearsal
+browser checks pass on the restored path. Remote verification confirms owner-only
+access, the original app unchanged and the root clasp target unchanged. No sheet
+writes, reset, data restore, Git commit or Git push occurred. The owner subsequently
+confirmed that the restored app reloads successfully. This confirms recovery of
+loading, not a new performance measurement. Do not deploy another render guess
+over the working app.
+
+**Isolated startup investigation:** Diagnostic versions 11/12 use a separate
+owner-only URL in the rehearsal project. They include no collection reader,
+writer or save RPC; all test data is synthetic. After publishing each diagnostic,
+remote HEAD was restored to version 9, and the working deployment remained on 9.
+The owner ran version 11: the old static path failed at snapshot insertion because
+`HtmlOutput.getContent()` returned zero snapshot slots. Reading the unprocessed
+template first avoided the failure. That run measured 317/302 ms for the working
+template, 35 ms for raw-then-create, and 31 ms for a single-print template. These
+are synthetic construction times, not end-to-end startup or guaranteed savings.
+Even the working output differed from unprocessed source, so version 12 compares
+alternatives directly against the working output and adds manual assembly using
+the original per-asset read path. At that checkpoint, local checks:
+338 tests (including 13 probe checks with desktop/mobile copy-button coverage) and
+16 rehearsal browser checks passed. Root app/deployments and all sheets unchanged.
+
+**Version 14, startup fix confirmed:** Probe 13 resolved the five-character
+difference from the working output: five extra newlines after closed script/style
+tags, outside all executable code, styles and embedded data. Raw-template
+construction took 35 ms versus 258/268 ms for baseline construction in that
+synthetic run. The private app now reads `FastIndex` through `getRawContent`,
+inserts serialized data before HTML processing, and falls back to the unchanged
+v9 `Index` template if reading, slot checking or output construction fails.
+Fallback diagnostics record only the stage, never full HTML/error contents.
+All 344 tests and 16 rehearsal browser checks pass, including forced fallback,
+script-like notes, literal replacement markers and normal save/conflict flows.
+The generated fast page matches the hosted probe by hash; all 12 other existing
+files and the save RPC remain identical to v9. Only Code rendering changed and
+FastIndex was added. Verified deployment 14 is owner-only; original deployments,
+content and root clasp target remain unchanged. No spreadsheet writes or Git push.
+The owner then supplied a successful actual-app report: `raw-template`, 6 ms page
+read + 24 ms construction, 1,196 ms server total, 961 ms sheet read, 127 ms app
+ready / 226 ms first frames. Record this as the real-load confirmation, not
+another required save rehearsal. The isolated non-writing diagnostic remains on
+version 13 at its separate URL. Timing evidence is saved in ignored
+`load-timing-v14.json` and `render-probe-owner-result-v11/v12/v13.json`.

@@ -1,0 +1,40 @@
+<script>
+  const MiniRehearsalStartup = (() => {
+    const started = performance.now();
+    let server = null, appReadyMs = null, firstFramesMs = null;
+    const elapsed = () => Math.round(performance.now() - started);
+    function report() {
+      const nav = performance.getEntriesByType('navigation')[0];
+      return { scope: 'Private rehearsal; timings only. Browser timings cover the app iframe, not the full address-bar load.',
+        server, browser: { appReadyMs, firstFramesMs,
+          iframeResponseEndMs: nav?.responseEnd > 0 ? Math.round(nav.responseEnd) : null,
+          iframeDomContentLoadedMs: nav?.domContentLoadedEventEnd > 0 ? Math.round(nav.domContentLoadedEventEnd) : null } };
+    }
+    document.addEventListener('click', async event => {
+      const button = event.target.closest('[data-rehearsal-copy-timing]');
+      if (!button) return;
+      const text = JSON.stringify(report(), null, 2);
+      const fallback = button.parentElement.querySelector('[data-rehearsal-timing-text]');
+      try {
+        await navigator.clipboard.writeText(text);
+        button.textContent = 'Timing copied';
+      } catch (_) {
+        fallback.textContent = text;
+        fallback.hidden = false;
+        fallback.focus();
+        button.textContent = 'Select timing below';
+      }
+    });
+    return { report,
+      setServer(value) { server = value; },
+      ready() {
+        if (!document.getElementById('miniV2Root')) return;
+        appReadyMs = elapsed();
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          firstFramesMs = elapsed();
+          console.debug('Rehearsal load timing', report());
+        }));
+      }
+    };
+  })();
+</script>

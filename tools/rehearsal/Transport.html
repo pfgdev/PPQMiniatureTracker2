@@ -1,0 +1,21 @@
+<script>
+  const MiniRehearsalTransport = (() => {
+    function send(request) {
+      return new Promise(resolve => {
+        let settled = false;
+        const uncertain = () => finish({ ok: false, code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Retry to check the same save." });
+        function finish(response) {
+          if (settled) return;
+          settled = true;
+          if (response?.timing) console.debug('Rehearsal save timing', response.timing);
+          resolve(response);
+        }
+        try {
+          google.script.run.withSuccessHandler(finish).withFailureHandler(uncertain).saveRehearsalChanges(request);
+        } catch (_) { uncertain(); }
+      });
+    }
+    // The UI owns the single watchdog, leaving the RPC time to return its confirmation.
+    return { create: snapshot => Object.assign(MiniPersistenceClient.createTransport({ snapshot, send }), { confirmationTimeoutMs: 90000 }) };
+  })();
+</script>

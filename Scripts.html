@@ -1,5 +1,14 @@
 <script>
   (function () {
+    let persistenceTransport = null;
+    if (INITIAL_STATE.persistenceSnapshot) {
+      // Offline harness only. No deployed reader supplies this snapshot or reachable save RPC.
+      try {
+        if (INITIAL_STATE.saveTestMode !== true || typeof window.__miniPersistenceSend !== "function") throw new Error("Storage rehearsal is not configured");
+        persistenceTransport = MiniPersistenceClient.createTransport({ snapshot: INITIAL_STATE.persistenceSnapshot, send: window.__miniPersistenceSend });
+        Object.assign(INITIAL_STATE, persistenceTransport.initialState());
+      } catch (_) { INITIAL_STATE.loadError = true; }
+    }
     if (INITIAL_STATE.loadError) {
       document.getElementById("app").innerHTML = `<div class="mini-v2"><section class="v2-card mini-v2-top-card">
         <div class="v2-card-header">Collection preview unavailable</div>
@@ -116,14 +125,17 @@
       editorDrafts: Object.create(null),
       newGroups: Object.create(null),
       deletedGroups: [],
+      removedGroups: [],
+      removedCopies: [],
       nextStickerStart: null,
       nextStickerRevision: 0,
       stickerCursorRevision: 0,
       nextMockId: 1,
       detailPointerDownInside: false
     };
-    const listManager = { key: "set", query: "", forms: Object.create(null), undo: [], notice: "",
+    const listManager = { key: "set", query: "", showRemoved: false, forms: Object.create(null), undo: [], notice: "",
       catalogs: Object.create(null), nextId: 1, pageStyles: null };
+    const recovery = { kind: "groups", query: "", notice: "", pageStyles: null };
     LIST_DEFINITIONS.forEach(definition => {
       const values = definition.kind ? FILTER_OPTIONS[definition.kind]
         : definition.key === "set" ? state.sets : definition.key === "paint" ? PAINT_OPTIONS
@@ -134,9 +146,10 @@
         home: definition.key === "locations" && state.homeLocations.includes(value),
         locked: ["n/a", UNSPECIFIED_VALUE.toLowerCase()].includes(value.toLowerCase())
       }));
+      if (persistenceTransport) listManager.catalogs[definition.key] = INITIAL_STATE.choiceRecords[definition.key] || [];
     });
 
-    const saveTransport = MiniSaveFlow.createSimulator([
+    const saveTransport = persistenceTransport || MiniSaveFlow.createSimulator([
       ...state.groups.map(group => ({ table: "groups", id: group.rootId, value: saveGroupRecord(group) })),
       ...Object.entries(listManager.catalogs).flatMap(([key, choices]) => choices.map(choice => ({ table: `lists:${key}`, id: choice.id, value: choice })))
     ]);
@@ -148,6 +161,7 @@
 
     let root;
     let listDialogNode;
+    let recoveryDialogNode;
     let workspaceNode;
     let summaryLaneNode;
     let summaryMarkup = "";
@@ -241,7 +255,10 @@
                 <label class="mini-v2-lists-mobile-picker">List<select id="miniV2ListsPicker"></select></label>
                 <div class="mini-v2-lists-toolbar">
                   <div><h3 id="miniV2ListsHeading"></h3><p id="miniV2ListsCount"></p></div>
-                  <button type="button" class="button mini-v2-copy-btn mini-v2-secondary" data-list-action="add">+ Add</button>
+                  <div class="mini-v2-lists-toolbar-actions">
+                    <label class="mini-v2-list-home"><input id="miniV2ListsRemoved" type="checkbox">Show removed</label>
+                    <button type="button" class="button mini-v2-copy-btn mini-v2-secondary" data-list-action="add">+ Add</button>
+                  </div>
                 </div>
                 <input id="miniV2ListsSearch" class="mini-v2-lists-input" type="search" placeholder="Search choices..." aria-label="Search list choices">
                 <div id="miniV2ListsForm" hidden></div>
@@ -253,6 +270,22 @@
                 <p id="miniV2ListsScope">Preview only. List changes reset on reload.</p></div>
               <button type="button" class="button mini-v2-copy-btn" data-list-action="undo" hidden>Undo removal</button>
             </div>
+          </dialog>
+          <dialog id="miniV2RecoveryDialog" class="mini-v2-lists-dialog mini-v2-recovery-dialog" aria-labelledby="miniV2RecoveryTitle">
+            <div class="mini-v2-lists-header"><h2 id="miniV2RecoveryTitle">Removed Miniatures</h2>
+              <button type="button" class="button mini-v2-copy-btn" data-recovery-action="close">Done</button></div>
+            <div class="mini-v2-lists-content">
+              <div class="mini-v2-lists-toolbar">
+                <div class="mini-v2-view-switch" role="group" aria-label="Removed miniature view">
+                  <button type="button" data-recovery-kind="groups" aria-pressed="true">Groups</button>
+                  <button type="button" data-recovery-kind="copies" aria-pressed="false">Copies</button>
+                </div><span id="miniV2RecoveryCount" class="mini-v2-list-choice-meta"></span>
+              </div>
+              <input id="miniV2RecoverySearch" class="mini-v2-lists-input" type="search" placeholder="Search removed miniatures..." aria-label="Search removed miniatures">
+              <div id="miniV2RecoveryRows" class="mini-v2-lists-rows" role="region" aria-label="Removed miniatures" tabindex="0"></div>
+              <div id="miniV2RecoveryFeedback"></div>
+            </div>
+            <div class="mini-v2-lists-footer"><p id="miniV2RecoveryNotice" role="status">Restore returns saved data. Unfinished edits do not survive a reload.</p></div>
           </dialog>
           <div id="miniV2DetailStatusTip" class="mini-v2-detail-status-tip" role="tooltip" hidden></div>
           <div class="mini-v2-workspace">
@@ -366,6 +399,7 @@
     function bindNodes() {
       root = document.getElementById("miniV2Root");
       listDialogNode = document.getElementById("miniV2ListsDialog");
+      recoveryDialogNode = document.getElementById("miniV2RecoveryDialog");
       workspaceNode = root.querySelector(".mini-v2-workspace");
       summaryLaneNode = document.getElementById("miniV2SummaryLane");
       listHeaderNoteNode = document.getElementById("miniV2ListHeaderNote");
@@ -399,6 +433,21 @@
     }
 
     function bindEvents() {
+      recoveryDialogNode.addEventListener("cancel", event => { event.preventDefault(); closeRecovery(); });
+      recoveryDialogNode.addEventListener("click", handleRecoveryClick);
+      recoveryDialogNode.addEventListener("input", event => {
+        event.stopPropagation();
+        if (event.target.id === "miniV2RecoverySearch") { recovery.query = event.target.value; renderRecoveryRows(); }
+      });
+      recoveryDialogNode.addEventListener("keydown", event => {
+        event.stopPropagation();
+        if (event.key === "Tab") {
+          const nodes = [...recoveryDialogNode.querySelectorAll('button:not(:disabled), input, [tabindex="0"]')].filter(node => node.getClientRects().length);
+          if (document.activeElement === (event.shiftKey ? nodes[0] : nodes.at(-1))) {
+            event.preventDefault(); (event.shiftKey ? nodes.at(-1) : nodes[0]).focus();
+          }
+        }
+      });
       listDialogNode.addEventListener("cancel", event => { event.preventDefault(); closeListManager(); });
       listDialogNode.addEventListener("click", handleListManagerClick);
       listDialogNode.addEventListener("input", handleListManagerInput);
@@ -611,6 +660,8 @@
       state.groups = state.groups.map(patchGroup);
       Object.keys(state.newGroups).forEach(id => { state.newGroups[id] = patchGroup(state.newGroups[id]); });
       state.deletedGroups.forEach(record => { record.group = patchGroup(record.group); });
+      state.removedGroups.forEach(record => { record.group = patchGroup(record.group); });
+      state.removedCopies.forEach(patch);
       // Relabel both draft and baseline so a global rename is never a miniature edit.
       listEditors().forEach(editor => {
         const initial = JSON.parse(editor.initial);
@@ -638,7 +689,7 @@
 
     function openListManager() {
       hideDetailStatusTip();
-      if (listDialogNode.open) return;
+      if (listDialogNode.open || recoveryDialogNode.open) return;
       state.summaryPanel = ""; state.openFacetKey = ""; state.locationMenuOpen = false;
       renderSummaryLane(); renderFacetBar(); renderFacetFlyout(); renderLocationFilter();
       const html = document.documentElement;
@@ -670,24 +721,25 @@
       document.getElementById("miniV2ListsPicker").innerHTML = LIST_DEFINITIONS.map(item =>
         `<option value="${item.key}"${item.key === definition.key ? " selected" : ""}>${item.label}</option>`).join("");
       document.getElementById("miniV2ListsHeading").textContent = definition.title;
-      const count = activeListValues(definition.key).length;
-      document.getElementById("miniV2ListsCount").textContent = `${count} ${count === 1 ? "choice" : "choices"}`;
       document.getElementById("miniV2ListsSearch").value = listManager.query;
+      document.getElementById("miniV2ListsRemoved").checked = listManager.showRemoved;
       renderListChoiceForm(); renderListChoiceRows(); renderListNotice();
       syncSaveUI();
     }
 
     function renderListChoiceRows() {
       const key = listManager.key;
+      const count = activeListValues(key).length;
+      document.getElementById("miniV2ListsCount").textContent = `${count} ${listManager.showRemoved ? "active " : ""}${count === 1 ? "choice" : "choices"}`;
       const query = listManager.query.trim().toLowerCase();
-      const choices = listManager.catalogs[key].filter(choice => !choice.hidden && choice.value.toLowerCase().includes(query));
+      const choices = listManager.catalogs[key].filter(choice => (!choice.hidden || listManager.showRemoved) && choice.value.toLowerCase().includes(query));
       document.getElementById("miniV2ListsRows").innerHTML = choices.length ? choices.map(choice => {
         const usage = listChoiceUsage(key, choice.value);
         return `<div class="mini-v2-list-choice" data-list-choice="${choice.id}">
           <div class="mini-v2-list-choice-text"><span class="mini-v2-list-choice-name">${escapeHtml(choice.value)}</span>
-            <span class="mini-v2-list-choice-meta">${choice.locked ? "Built-in choice" : usage.label}</span>
+            <span class="mini-v2-list-choice-meta">${choice.hidden ? "Removed" : choice.locked ? "Built-in choice" : usage.label}</span>
             ${key === "locations" ? `<span class="mini-v2-list-choice-context">${choice.home ? "Home + current location" : "Current location only"}</span>` : ""}</div>
-          <div class="mini-v2-list-choice-actions">${choice.locked ? '<span class="mini-v2-list-protected">Built-in</span>' : `
+          <div class="mini-v2-list-choice-actions">${choice.hidden ? `<button type="button" data-list-action="restore" data-choice-id="${choice.id}" aria-label="Restore ${escapeHtml(choice.value)}"${listManager.forms[key] ? " disabled" : ""}>Restore</button>` : choice.locked ? '<span class="mini-v2-list-protected">Built-in</span>' : `
             <button type="button" data-list-action="rename" data-choice-id="${choice.id}" aria-label="${key === "locations" ? "Edit" : "Rename"} ${escapeHtml(choice.value)}"${listManager.forms[key] ? " disabled" : ""}>${key === "locations" ? "Edit" : "Rename"}</button>
             <button type="button" data-list-action="remove" data-choice-id="${choice.id}" aria-label="Remove ${escapeHtml(choice.value)}"${listManager.forms[key] ? " disabled" : ""}>Remove</button>`}</div></div>`;
       }).join("") : '<p class="mini-v2-list-empty">No matching choices. Use Add to create one.</p>';
@@ -807,9 +859,17 @@
       const button = event.target.closest("button[data-list-action]");
       if (!button || button.disabled) return;
       const action = button.dataset.listAction, key = listManager.key;
-      if (saveJob && ["save", "undo"].includes(action)) { handleSaveAction("retry"); return; }
+      if (saveJob && ["save", "undo", "restore"].includes(action)) { handleSaveAction("retry"); return; }
       if (action === "close") { closeListManager(); return; }
       if (action === "save") { saveListChoice(); return; }
+      if (action === "restore") {
+        const choice = listManager.catalogs[key].find(item => item.id === button.dataset.choiceId && item.hidden);
+        if (!choice) return;
+        startSave([{ table: `lists:${key}`, id: choice.id, before: choice, value: { ...choice, hidden: false } }], {
+          listKey: key, choiceId: choice.id, action: "restore", apply: records => applyListSave(key, records[0].value)
+        });
+        return;
+      }
       if (action === "undo") {
         let record, choice;
         while (listManager.undo.length && !choice) {
@@ -841,7 +901,12 @@
       if (event.target.disabled) return;
       if (handleSaveInput(event.target)) return;
       const node = event.target;
-      if (node.id === "miniV2ListsSearch") { listManager.query = node.value; renderListChoiceRows(); return; }
+      if (node.id === "miniV2ListsRemoved") { listManager.showRemoved = node.checked; renderListChoiceRows(); syncSaveUI(); return; }
+      if (node.id === "miniV2ListsSearch") {
+        // The blur-time change event must not replace the row being clicked.
+        if (listManager.query !== node.value) { listManager.query = node.value; renderListChoiceRows(); syncSaveUI(); }
+        return;
+      }
       if (node.id === "miniV2ListsPicker") {
         listManager.key = node.value; listManager.query = ""; renderListManager();
         document.getElementById("miniV2ListsPicker").focus(); return;
@@ -873,25 +938,29 @@
 
     function startSave(targets, options) {
       if (saveJob) return;
-      saveJob = { ...options, request: MiniSaveFlow.clone({ requestId: newMockId("request"), targets }),
+      saveJob = { ...options, request: MiniSaveFlow.clone({ requestId: newMockId("request"), targets: targets.map(target => saveTransport.capture ? saveTransport.capture(target) : target) }),
         status: "saving", error: null };
-      saveTransport.setOutcome(nextSaveOutcome); nextSaveOutcome = "success";
+      saveTransport.setOutcome?.(nextSaveOutcome); nextSaveOutcome = "success";
       sendSave();
     }
 
     async function sendSave() {
       const job = saveJob;
       if (!job || job.sending) return;
-      job.sending = true; job.status = "saving";
+      job.sending = true; job.status = "saving"; job.slow = false;
       syncSaveUI();
-      let response, timer;
+      const timeoutMs = saveTransport.confirmationTimeoutMs === 90000 ? 90000 : 15000;
+      let response, timer, slowTimer;
+      if (timeoutMs > 15000) slowTimer = setTimeout(() => {
+        if (saveJob === job && job.sending) { job.slow = true; syncSaveUI(); }
+      }, 15000);
       try {
         response = await Promise.race([saveTransport.send(job.request), new Promise(resolve => {
-          timer = setTimeout(() => resolve({ ok: false, code: "SAVE_UNCERTAIN", message: "Save is taking too long to confirm. Your draft is safe. Retry to check the same save." }), 15000);
+          timer = setTimeout(() => resolve({ ok: false, code: "SAVE_UNCERTAIN", message: "Save is taking too long to confirm. Your draft is safe. Retry to check the same save." }), timeoutMs);
         })]);
       }
       catch (_) { response = { ok: false, code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Your draft is safe. Retry to check the same save." }; }
-      finally { clearTimeout(timer); }
+      finally { clearTimeout(timer); clearTimeout(slowTimer); }
       if (response?.ok && (!Array.isArray(response.result?.records) || response.result.records.length !== job.request.targets.length
         || response.result.records.some((record, index) => !record || record.value === undefined || record.table !== job.request.targets[index].table || record.id !== job.request.targets[index].id))) {
         response = { ok: false, code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Your draft is safe. Retry to check the same save." };
@@ -901,16 +970,19 @@
         job.status = "error";
         job.error = response || { code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Retry to check it safely." };
         syncSaveUI();
-        if (job.listKey && listDialogNode.open && job.listKey === listManager.key) listDialogNode.querySelector('[data-save-notice]')?.scrollIntoView({ block: "nearest" });
+        if (job.recoveryId && recoveryDialogNode.open) recoveryDialogNode.querySelector('[data-save-notice]')?.scrollIntoView({ block: "nearest" });
+        else if (job.listKey && listDialogNode.open && job.listKey === listManager.key) listDialogNode.querySelector('[data-save-notice]')?.scrollIntoView({ block: "nearest" });
         else if (job.request.targets.some(target => target.table === "groups" && target.id === state.selectedRootId)) detailContentNode.querySelector('[data-save-notice]')?.scrollIntoView({ block: "nearest" });
         return;
       }
       // A successful save clears its submitted draft only after acknowledgment, even if its sidebar was closed.
       const restoreFocus = captureFocus();
       releaseSaveLocks(); saveJob = null;
+      acceptPersistenceRecords(response.result.records);
       job.apply(response.result.records);
       renderAllPreservingScroll(null, { keepSelection: true });
       if (listDialogNode.open) renderListManager();
+      if (recoveryDialogNode.open) renderRecovery();
       syncSaveUI();
       restoreFocus();
       if (job.listKey && listDialogNode.open && job.listKey === listManager.key) {
@@ -923,10 +995,14 @@
       records.forEach(record => {
         const entry = entries.find(item => item.group.rootId === record.id);
         const selected = state.selectedRootId === record.id;
+        if (!persistenceTransport && kind !== "discard") archivePreviewChanges(record, entry.group);
         if (kind === "delete" && !record.value) state.deletedGroups.push({ group: entry.group, editor: entry.editor,
           selectedCopyId: entry.selectedCopyId, draftLocations: entry.locations });
         state.groups = state.groups.filter(group => group.rootId !== record.id);
-        if (record.value) state.groups.push(savedRecordGroup(record.value));
+        if (record.value) {
+          state.groups.push(savedRecordGroup(record.value));
+          state.deletedGroups = state.deletedGroups.filter(history => history.group.rootId !== record.id);
+        }
         entry.group.copies.forEach(copy => { delete state.draftLocations[copy.id]; });
         delete state.editorDrafts[record.id]; delete state.newGroups[record.id];
         if (state.editor?.rootId === record.id) {
@@ -934,6 +1010,7 @@
           if (entry.editor?.readScroll) Object.assign(scroll, { detailTop: entry.editor.readScroll.detailTop, detailTableLeft: entry.editor.readScroll.detailTableLeft });
         }
         if (kind !== "discard" && entry.editor && record.value) rememberNextStickerStart(entry.editor);
+        if (record.value) remapSavedSelection(record);
         if (selected && !record.value) { state.selectedRootId = ""; state.selectedCopyId = ""; }
         if (selected && record.value && !record.value.copies[state.selectedCopyId]) {
           state.selectedCopyId = state.browseMode === "individuals" ? Object.keys(record.value.copies)[0] || "" : "";
@@ -960,25 +1037,150 @@
       });
     }
 
+    function acceptPersistenceRecords(records) {
+      if (!saveTransport.accept) return;
+      saveTransport.accept(records);
+      saveTransport.choices().forEach(({ key, value }) => {
+        if (!listManager.catalogs[key].some(choice => choice.id === value.id)
+          && !records.some(record => record.table === `lists:${key}` && record.persistedId === value.id)) listManager.catalogs[key].push(value);
+      });
+      syncListChoices();
+    }
+
+    function remapSavedSelection(record) {
+      const contexts = [state, state.pendingReturn];
+      for (const context of contexts.slice()) {
+        for (let previous = context?.previousBrowse; previous; previous = previous.previousBrowse) contexts.push(previous);
+      }
+      [...new Set(contexts)].filter(Boolean).forEach(context => {
+        if (context.selectedRootId === record.id) {
+          context.selectedRootId = record.value.rootId;
+          context.selectedCopyId = record.copyIds?.[context.selectedCopyId] || context.selectedCopyId;
+        }
+      });
+      listEditors().forEach(editor => {
+        if (editor.returnSelection?.rootId === record.id) {
+          editor.returnSelection.rootId = record.value.rootId;
+          editor.returnSelection.copyId = record.copyIds?.[editor.returnSelection.copyId] || editor.returnSelection.copyId;
+        }
+      });
+    }
+
+    function archivePreviewChanges(record, before) {
+      if (!record.value) {
+        state.removedGroups.push({ group: before, deletedAt: new Date().toISOString() });
+        return;
+      }
+      state.removedGroups = state.removedGroups.filter(item => item.group.rootId !== record.id);
+      const retained = new Set(Object.keys(record.value.copies));
+      state.removedCopies = state.removedCopies.filter(copy => !retained.has(copy.id));
+      before.copies.filter(copy => !retained.has(copy.id)).forEach(copy => {
+        if (!state.removedCopies.some(item => item.id === copy.id)) state.removedCopies.push({ ...copy, deletedAt: new Date().toISOString() });
+      });
+    }
+
+    function removedMiniatures() {
+      if (persistenceTransport) {
+        const removed = persistenceTransport.removed();
+        return { groups: removed.groups.map(item => ({ ...item, group: savedRecordGroup(item.group) })), copies: removed.copies };
+      }
+      return { groups: state.removedGroups, copies: state.removedCopies.map(copy => ({ ...copy,
+        groupName: state.groups.find(group => group.rootId === copy.rootId)?.name || state.removedGroups.find(item => item.group.rootId === copy.rootId)?.group.name || "Removed group",
+        parentDeleted: !state.groups.some(group => group.rootId === copy.rootId) })) };
+    }
+
+    function openRecovery() {
+      if (listDialogNode.open || recoveryDialogNode.open) return;
+      hideDetailStatusTip(); state.summaryPanel = ""; state.openFacetKey = ""; state.locationMenuOpen = false;
+      renderSummaryLane(); renderFacetBar(); renderFacetFlyout(); renderLocationFilter();
+      const html = document.documentElement;
+      recovery.pageStyles = { overflow: html.style.overflow, gutter: html.style.scrollbarGutter, x: window.scrollX, y: window.scrollY };
+      if (window.innerWidth > html.clientWidth) html.style.scrollbarGutter = "stable";
+      html.style.overflow = "hidden";
+      renderRecovery(); recoveryDialogNode.showModal();
+      recoveryDialogNode.querySelector('[data-recovery-action="close"]').focus({ preventScroll: true });
+    }
+
+    function closeRecovery() {
+      recoveryDialogNode.close();
+      document.documentElement.style.overflow = recovery.pageStyles.overflow;
+      document.documentElement.style.scrollbarGutter = recovery.pageStyles.gutter;
+      renderAllPreservingScroll(null, { keepSelection: true });
+      window.scrollTo(recovery.pageStyles.x, recovery.pageStyles.y);
+      focusSummaryTrigger("changes");
+    }
+
+    function renderRecovery() {
+      recoveryDialogNode.querySelectorAll('[data-recovery-kind]').forEach(button => button.setAttribute("aria-pressed", String(button.dataset.recoveryKind === recovery.kind)));
+      document.getElementById("miniV2RecoverySearch").value = recovery.query;
+      document.getElementById("miniV2RecoveryNotice").textContent = recovery.notice || "Restore returns saved data. Unfinished edits do not survive a reload.";
+      renderRecoveryRows(); syncSaveUI();
+    }
+
+    function renderRecoveryRows() {
+      const entries = removedMiniatures()[recovery.kind], query = recovery.query.trim().toLowerCase();
+      document.getElementById("miniV2RecoveryCount").textContent = `${entries.length} removed`;
+      const rows = entries.filter(item => `${item.group?.name || item.groupName} ${item.sticker || ""}`.toLowerCase().includes(query));
+      document.getElementById("miniV2RecoveryRows").innerHTML = rows.map(item => {
+        const group = item.group, name = group ? group.name : `${item.sticker || "No sticker"} / ${item.groupName}`;
+        return `<div class="mini-v2-list-choice"><div class="mini-v2-list-choice-text">
+          <span class="mini-v2-list-choice-name">${escapeHtml(name)}</span><span class="mini-v2-list-choice-meta">${group ? `${group.copies.length} ${group.copies.length === 1 ? "copy" : "copies"}` : `Copy ${escapeHtml(item.miniNumber)}`}</span>
+          ${item.parentDeleted ? '<span class="mini-v2-list-choice-context">Restore the group first.</span>' : ""}</div>
+          <button type="button" class="button mini-v2-copy-btn" data-recovery-action="restore" data-recovery-id="${escapeHtml(group ? group.rootId : item.id)}"${item.parentDeleted || saveJob ? " disabled" : ""}>Restore</button></div>`;
+      }).join("") || `<p class="mini-v2-list-empty">${query ? "No matching removed miniatures." : `No removed ${recovery.kind}.`}</p>`;
+    }
+
+    function handleRecoveryClick(event) {
+      event.stopPropagation();
+      const feedback = event.target.closest('[data-save-action]');
+      if (feedback) { if (!feedback.disabled) handleSaveAction(feedback.dataset.saveAction); return; }
+      const kind = event.target.closest('[data-recovery-kind]');
+      if (kind) { recovery.kind = kind.dataset.recoveryKind; recovery.query = ""; recovery.notice = ""; renderRecovery(); return; }
+      const button = event.target.closest('[data-recovery-action]');
+      if (!button || button.disabled) return;
+      if (button.dataset.recoveryAction === "close") { closeRecovery(); return; }
+      if (saveJob) { handleSaveAction("retry"); return; }
+      const item = removedMiniatures()[recovery.kind].find(item => (item.group?.rootId || item.id) === button.dataset.recoveryId);
+      if (!item) return;
+      const group = item.group || state.groups.find(group => group.rootId === item.rootId);
+      if (!group) return;
+      const editor = state.editor?.rootId === group.rootId ? state.editor : state.editorDrafts[group.rootId];
+      if (editorHasChanges(editor || null) || group.copies.some(isDirty)) {
+        recovery.notice = "Save or discard this group's pending changes before restoring."; renderRecovery(); return;
+      }
+      const value = item.group ? group : enrichGroup({ ...group, copies: group.copies.concat({ id: item.id, rootId: item.rootId,
+        miniNumber: item.miniNumber, sticker: item.sticker, note: item.note, currentLocation: item.currentLocation, home: group.home }) });
+      const target = groupSaveTarget(group, value);
+      if (!item.group) target.restoreCopyId = item.id;
+      recovery.notice = "";
+      startSave([target], { action: "restore-removed", recoveryId: button.dataset.recoveryId, recoveryKind: recovery.kind, apply: records => {
+        const history = state.deletedGroups.find(record => record.group.rootId === group.rootId);
+        applyMiniSave(records, [{ group }], "restore", item.group ? history : null);
+        recovery.notice = "Restored.";
+      } });
+    }
+
     function saveMessageMarkup(place) {
       if (!saveJob) return "";
       const job = saveJob, error = job.error, pending = job.status === "saving";
-      let markup = `<p role="status">${pending ? "Saving..." : escapeHtml(error.message)}</p>`;
+      let markup = `<p role="status">${pending ? job.slow ? "Still saving. You can keep browsing." : "Saving..." : escapeHtml(error.message)}</p>`;
       if (pending) return markup;
       if (error.code === "STALE") {
         const changed = staleSaveTargets(job);
         const bulk = job.request.targets.length > 1;
         const deleting = job.action === "confirm-delete-group";
-        const prompt = deleting ? "Delete this group anyway?" : bulk ? "Save all your changes anyway?" : "Save your changes anyway?";
+        const deleted = changed.some(({ target, latest }) => target.table === "groups" && target.value && (!latest.value
+          || Object.keys(target.value.copies).some(id => target.before?.copies[id] && !latest.value.copies[id])));
+        const prompt = job.recoveryId ? "Try restoring it again?" : deleted ? "Restore the removed miniatures and save your edits?" : deleting ? "Delete this group anyway?" : bulk ? "Save all your changes anyway?" : "Save your changes anyway?";
         const names = changed.map(({ target }) => target.before?.name || target.before?.value || target.value?.name || "New entry");
         return `<p role="status">${changed.length === 1 ? "This entry changed" : `${changed.length} entries changed`} since you opened ${changed.length === 1 ? "it" : "them"}.<br>${prompt}</p>
           ${bulk ? `<p>Discard only affects: ${escapeHtml(names.join(", "))}.</p>` : ""}
-          <button type="button" class="button mini-v2-copy-btn mini-v2-primary" data-save-action="overwrite">${deleting ? "Delete Anyway" : "Save Anyway"}</button>
-          <button type="button" class="button mini-v2-copy-btn" data-save-action="discard">Discard My Changes</button>`;
-      } else if (place === "summary" && !["save-all-pending", "undo-delete-group"].includes(job.action)) {
-        markup += '<button type="button" class="button mini-v2-copy-btn mini-v2-primary" data-save-action="retry">Retry save</button>';
+          <button type="button" class="button mini-v2-copy-btn mini-v2-primary" data-save-action="overwrite">${job.recoveryId ? "Retry Restore" : deleted ? "Restore and Save" : deleting ? "Delete Anyway" : "Save Anyway"}</button>
+          <button type="button" class="button mini-v2-copy-btn" data-save-action="discard">${job.recoveryId ? "Cancel Restore" : "Discard My Changes"}</button>`;
+      } else if (place === "recovery" || (place === "summary" && !["save-all-pending", "undo-delete-group"].includes(job.action))) {
+        markup += `<button type="button" class="button mini-v2-copy-btn mini-v2-primary" data-save-action="retry">${job.recoveryId ? "Retry Restore" : "Retry save"}</button>`;
       }
-      if (!["SAVE_UNCERTAIN", "REQUEST_REUSED"].includes(error.code)) markup += '<button type="button" class="button mini-v2-copy-btn" data-save-action="edit">Keep Editing</button>';
+      if (!["SAVE_UNCERTAIN", "REQUEST_REUSED"].includes(error.code)) markup += `<button type="button" class="button mini-v2-copy-btn" data-save-action="edit">${job.recoveryId ? "Cancel Restore" : "Keep Editing"}</button>`;
       return markup;
     }
 
@@ -991,26 +1193,29 @@
       const label = (node, text) => { node.dataset.saveLabel = node.innerHTML; node.textContent = text; };
       const affected = job?.request.targets.some(target => target.table === "groups" && target.id === state.selectedRootId);
       if (job) {
-        root.querySelectorAll('[data-action="save-edit"], [data-action="save-changes"], [data-action="save-all-pending"], [data-action="confirm-delete-group"], [data-action="undo-delete-group"], [data-list-action="save"], [data-list-action="undo"]').forEach(lock);
+        root.querySelectorAll('[data-action="save-edit"], [data-action="save-changes"], [data-action="save-all-pending"], [data-action="confirm-delete-group"], [data-action="undo-delete-group"], [data-list-action="save"], [data-list-action="undo"], [data-list-action="restore"], [data-recovery-action="restore"]').forEach(lock);
         if (affected) {
           detailPanelNode.querySelectorAll('input, select, textarea, [data-action="discard-edit"], [data-action="reset-changes"], [data-action="set-all-home"], [data-action="edit-all-home"], [data-action="add-copy"], [data-action="remove-copy"], [data-action="undo-remove-copy"], [data-action="apply-next-sticker"], [data-action="delete-group"]').forEach(lock);
         }
         if (job.listKey === listManager.key) listDialogNode.querySelectorAll('#miniV2ListName, #miniV2ListHome, [data-list-action="cancel"]').forEach(lock);
-        const primary = job.listKey ? listDialogNode.querySelector(`[data-list-action="${job.action}"]`)
+        const primary = job.recoveryId ? recoveryDialogNode.querySelector(`[data-recovery-action="restore"][data-recovery-id="${job.recoveryId}"]`)
+          : job.listKey ? listDialogNode.querySelector(`[data-list-action="${job.action}"]${job.choiceId ? `[data-choice-id="${job.choiceId}"]` : ""}`)
           : job.action === "save-all-pending" || job.action === "undo-delete-group" ? root.querySelector(`[data-action="${job.action}"]`)
             : affected && detailPanelNode.querySelector(`[data-action="${job.action}"]`);
         if (primary && (!job.listKey || job.listKey === listManager.key)) {
           // A stale save is resolved only through the explicit choices in its notice.
           if (job.status === "saving" || job.error.code !== "STALE") {
-            label(primary, job.status === "saving" ? "Saving..." : "Retry");
+            label(primary, job.status === "saving" ? job.slow ? "Still saving..." : "Saving..." : "Retry");
             primary.disabled = job.status === "saving";
           }
         }
       }
       const hosts = [[detailContentNode, "detail", affected], [document.getElementById("miniV2ChangesMenu"), "summary", !!job],
-        [document.getElementById("miniV2ListsForm"), "list", !!job?.listKey && job.listKey === listManager.key]];
+        [document.getElementById("miniV2ListsForm"), "list", !!job?.listKey && job.listKey === listManager.key],
+        [document.getElementById("miniV2RecoveryFeedback"), "recovery", !!job?.recoveryId]];
       hosts.forEach(([host, place, show]) => {
         if (!host) return;
+        if (place === "list") host.hidden = !show && !listManager.forms[listManager.key];
         let node = host.querySelector(`:scope > [data-save-notice="${place}"]`);
         if (!show) { node?.remove(); return; }
         if (!node) { node = document.createElement("div"); node.dataset.saveNotice = place; node.className = "mini-v2-save-notice"; host.appendChild(node); }
@@ -1026,13 +1231,15 @@
         if (["SAVE_UNCERTAIN", "REQUEST_REUSED", "STALE"].includes(saveJob.error.code)) return;
         releaseSaveLocks(); saveJob = null; renderAllPreservingScroll(null, { keepSelection: true });
         if (listDialogNode.open) renderListManager();
+        if (recoveryDialogNode.open) renderRecovery();
         return;
       }
       if (action === "discard" && saveJob.error?.code === "STALE") { discardStaleChanges(); return; }
       if (action === "overwrite" && saveJob.error?.code === "STALE") {
         const targets = saveJob.request.targets.map((target, index) => {
           const latest = saveJob.error.latest[index].value;
-          return { ...target, before: latest, value: MiniSaveFlow.overwriteEdits(target.before, target.value, latest) };
+          return { ...target, before: latest, baseline: saveJob.error.latest[index].baseline || target.baseline,
+            value: MiniSaveFlow.overwriteEdits(target.before, target.value, latest) };
         });
         saveJob.request = MiniSaveFlow.clone({ requestId: newMockId("request"), targets });
         sendSave();
@@ -1040,13 +1247,14 @@
     }
 
     function staleSaveTargets(job) {
-      return job.request.targets.flatMap((target, index) => MiniSaveFlow.equal(target.before, job.error.latest[index].value)
+      return job.request.targets.flatMap((target, index) => !job.error.latest[index].conflicted && MiniSaveFlow.equal(target.before, job.error.latest[index].value)
         ? [] : [{ target, latest: job.error.latest[index] }]);
     }
 
     function discardStaleChanges() {
       const changed = staleSaveTargets(saveJob);
       releaseSaveLocks(); saveJob = null;
+      acceptPersistenceRecords(changed.map(({ latest }) => latest));
       const groups = changed.filter(({ target }) => target.table === "groups");
       if (groups.length) {
         const entries = groups.map(({ target }) => ({
@@ -1069,6 +1277,7 @@
       });
       renderAllPreservingScroll(null, { keepSelection: true });
       if (listDialogNode.open) renderListManager();
+      if (recoveryDialogNode.open) renderRecovery();
       syncSaveUI();
     }
 
@@ -1179,6 +1388,7 @@
       const draftCount = editorDraftIds().length;
       const hasWork = dirtyCount || draftCount || state.deletedGroups.length || saveJob;
       const pending = preparePendingBatch();
+      const removed = removedMiniatures();
       const reviewing = state.collectionView === "pending";
       const shownGroups = reviewing ? new Set(getBrowseRows().map(row => row.group.rootId)).size : null;
       const expanded = panel => String(state.summaryPanel === panel);
@@ -1227,6 +1437,7 @@
             ${draftCount && !reviewing ? `<button type="button" data-action="review-editor-drafts">Resume drafts <span>${draftCount} ${draftCount === 1 ? "group" : "groups"}</span></button>` : ""}
             ${state.deletedGroups.length ? `<button type="button" data-action="undo-delete-group">Undo deletion <span>${escapeHtml(state.deletedGroups.at(-1).group.name)}</span></button>` : ""}
             ${state.deletedGroups.at(-1)?.restoreError ? `<p class="mini-v2-summary-empty" role="status">${escapeHtml(state.deletedGroups.at(-1).restoreError)}</p>` : ""}
+            ${removed.groups.length || removed.copies.length ? '<button type="button" data-action="open-recovery" aria-haspopup="dialog">Removed miniatures <span>Restore</span></button>' : ""}
           </div>
         </div>
         <div id="miniV2DemoNotice" class="mini-v2-summary-popover mini-v2-demo-popover" ${state.summaryPanel === "demo" ? "" : "hidden"}>
@@ -1897,7 +2108,7 @@
           <section class="mini-v2-detail-group">
             <div class="mini-v2-note-card">
               <div class="mini-v2-note-label">Notes</div>
-              ${renderReadValue(group.notes || "No notes yet.", { marquee: true, className: "mini-v2-note-body" })}
+              ${renderReadValue(group.notes || "No notes yet.", { className: "mini-v2-note-body" })}
             </div>
           </section>
         </div>
@@ -1951,6 +2162,7 @@
     }
 
     function newMockId(prefix) {
+      if (persistenceTransport) return `${prefix}-${Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("")}`;
       return `${prefix}-${Date.now().toString(36)}-${state.nextMockId++}`;
     }
 
@@ -2022,9 +2234,8 @@
 
     function availableStickerFrom(start, used) {
       if (stickerCatalog) {
-        const free = code => !used.has(code);
-        return stickerCatalog.find(code => sequentialStickerIndex(code) >= start && free(code))
-          || stickerCatalog.find(free) || "";
+        // Fill catalog gaps first, even after manually entering a later sticker.
+        return stickerCatalog.find(code => !used.has(code)) || "";
       }
       for (let index = start; index < 2600; index++) {
         const code = stickerCode(index);
@@ -2053,6 +2264,7 @@
     }
 
     function rememberNextStickerStart(editor) {
+      if (stickerCatalog) return;
       const assigned = new Set(state.groups.flatMap(group => group.copies)
         .map(copy => String(copy.sticker || "").trim().toUpperCase()));
       // Only the saved editor can commit a sequence preference; other drafts remain temporary.
@@ -2523,7 +2735,7 @@
 
     function showDetailStatusTip() {
       const button = detailHeaderTagsNode.querySelector(".mini-v2-detail-status");
-      if (!button || listDialogNode.open) return;
+      if (!button || listDialogNode.open || recoveryDialogNode.open) return;
       clearTimeout(detailStatusTipHideTimer);
       detailStatusTipNode.hidden = false;
       button.setAttribute("aria-expanded", "true");
@@ -2753,7 +2965,7 @@
     }
 
     function handleRootClick(event) {
-      if (listDialogNode.open) return;
+      if (listDialogNode.open || recoveryDialogNode.open) return;
       const clickTarget = event.target instanceof Element ? event.target : null;
       const feedback = clickTarget?.closest('[data-save-action]');
       if (feedback) { event.stopPropagation(); if (!feedback.disabled) handleSaveAction(feedback.dataset.saveAction); return; }
@@ -2783,6 +2995,7 @@
         }
         if (action === "toggle-summary") { toggleSummaryPanel(actionButton.dataset.summaryPanel); return; }
         if (action === "open-lists") { openListManager(); return; }
+        if (action === "open-recovery") { openRecovery(); return; }
         if (action === "collection-view") { openCollectionView(actionButton.dataset.collectionView); return; }
         if (action === "review-pending") { openPendingReview(); return; }
         if (action === "leave-pending") { restorePendingBrowse(); return; }
@@ -3033,7 +3246,7 @@
     }
 
     function handleRootKeydown(event) {
-      if (listDialogNode.open) return;
+      if (listDialogNode.open || recoveryDialogNode.open) return;
       if (event.key === "Escape" && !detailStatusTipNode.hidden) {
         event.preventDefault();
         event.stopPropagation();
@@ -3152,7 +3365,7 @@
     }
 
     function handleDocumentClick(event) {
-      if (listDialogNode.open) return;
+      if (listDialogNode.open || recoveryDialogNode.open) return;
       const target = event && event.target;
       const dismissed = dismissOutsidePopovers(target);
       const detailPointerDownInside = state.detailPointerDownInside;
@@ -3164,7 +3377,7 @@
     }
 
     function handleDocumentPointerDown(event) {
-      if (listDialogNode.open) { state.detailPointerDownInside = false; return; }
+      if (listDialogNode.open || recoveryDialogNode.open) { state.detailPointerDownInside = false; return; }
       const target = event && event.target;
       state.detailPointerDownInside = !!(target instanceof Element && target.closest("#miniV2DetailPanel"));
     }

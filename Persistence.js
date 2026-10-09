@@ -290,6 +290,27 @@ function persistenceDeleteOrRestore_(state, payload, restoring, now) {
   return { rootId: group.rootId };
 }
 
+function persistenceRestoreCopy_(state, payload) {
+  persistenceShape_(payload, ["rootId", "id"], "copy restore");
+  var group = state.groups.find(function (item) { return item.rootId === payload.rootId && !item.deletedAt; });
+  var copy = state.copies.find(function (item) { return item.id === payload.id && item.rootId === payload.rootId; });
+  persistenceAssert_(group, "Restore the group before restoring this copy");
+  persistenceAssert_(copy && copy.deletedAt && !copy.deletedWithGroup, "Copy is not available to restore");
+  copy.deletedAt = "";
+  return { rootId: group.rootId };
+}
+
+function persistenceRestoreAndSave_(state, payload, services, now) {
+  var group = state.groups.find(function (item) { return item.rootId === payload.rootId; });
+  persistenceAssert_(group && Array.isArray(payload.copies), "Missing group to restore");
+  if (group.deletedAt) persistenceDeleteOrRestore_(state, { rootId: payload.rootId }, true, now);
+  payload.copies.forEach(function (value) {
+    var copy = state.copies.find(function (item) { return item.id === value.id && item.rootId === payload.rootId && item.deletedAt; });
+    if (copy) persistenceRestoreCopy_(state, { rootId: payload.rootId, id: copy.id });
+  });
+  return persistenceSaveGroup_(state, payload, services, now);
+}
+
 function persistenceChoiceChange_(state, payload, kind, services, now) {
   var editing = kind === "saveChoice";
   persistenceShape_(payload, editing ? ["id", "field", "value", "home"] : ["id"], "choice change");
@@ -326,7 +347,7 @@ function persistenceBatchItems_(payload) {
     persistenceShape_(item, ["clientKey", "kind", "payload"], "batch item");
     persistenceAssert_(persistenceId_(item.clientKey) && !keys.has(item.clientKey), "Invalid or duplicate batch key");
     keys.add(item.clientKey);
-    persistenceAssert_(["saveGroup", "saveLocations"].indexOf(item.kind) >= 0, "Only miniature saves belong in a batch");
+    persistenceAssert_(["saveGroup", "saveLocations", "restoreGroupAndSave"].indexOf(item.kind) >= 0, "Only miniature saves belong in a batch");
     persistenceAssert_(item.payload && typeof item.payload === "object", "Invalid batch payload");
     var rootId = item.payload.rootId;
     persistenceAssert_((rootId === "" && item.kind === "saveGroup") || persistenceId_(rootId), "Invalid batch group");
@@ -341,7 +362,8 @@ function persistenceBatchItems_(payload) {
 function persistenceSaveBatch_(state, payload, services, now) {
   return { changes: persistenceBatchItems_(payload).map(function (item) {
     var result = item.kind === "saveGroup" ? persistenceSaveGroup_(state, item.payload, services, now)
-      : persistenceSaveLocations_(state, item.payload);
+      : item.kind === "restoreGroupAndSave" ? persistenceRestoreAndSave_(state, item.payload, services, now)
+        : persistenceSaveLocations_(state, item.payload);
     result.clientKey = item.clientKey;
     return result;
   }) };
@@ -353,7 +375,7 @@ function persistenceTargets_(state, kind, payload) {
   items.forEach(function (item) {
     var value = item.payload;
     persistenceAssert_(value && typeof value === "object" && !Array.isArray(value), "Invalid change payload");
-    if (["saveGroup", "saveLocations", "deleteGroup", "restoreGroup"].indexOf(item.kind) >= 0) {
+    if (["saveGroup", "saveLocations", "deleteGroup", "restoreGroup", "restoreCopy", "restoreGroupAndSave"].indexOf(item.kind) >= 0) {
       persistenceAssert_(persistenceId_(value.rootId) || (item.kind === "saveGroup" && value.rootId === ""), "Invalid target group");
       if (value.rootId) groups.add(value.rootId);
     } else if (["saveChoice", "removeChoice", "restoreChoice"].indexOf(item.kind) >= 0) {
@@ -443,6 +465,8 @@ function preparePersistenceChange_(stored, request, services) {
     case "saveLocations": result = persistenceSaveLocations_(next, request.payload); break;
     case "deleteGroup": result = persistenceDeleteOrRestore_(next, request.payload, false, now); break;
     case "restoreGroup": result = persistenceDeleteOrRestore_(next, request.payload, true, now); break;
+    case "restoreCopy": result = persistenceRestoreCopy_(next, request.payload); break;
+    case "restoreGroupAndSave": result = persistenceRestoreAndSave_(next, request.payload, services, now); break;
     case "saveChoice": case "removeChoice": case "restoreChoice":
       result = persistenceChoiceChange_(next, request.payload, request.kind, services, now); break;
     default: persistenceError_("INVALID", "Unsupported save operation");

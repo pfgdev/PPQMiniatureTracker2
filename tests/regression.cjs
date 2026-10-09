@@ -620,7 +620,7 @@ const firstCopy = '013-ZHESOL-01';
           const originalGeometry = await tableGeometry();
           await page.locator('.mini-v2-copy-select').evaluateAll(nodes => nodes.forEach(n => { n.__retained = true; }));
           const toggle = page.locator('[data-browse-mode="individuals"]');
-          const before = await page.locator('.mini-v2-view-switch').boundingBox();
+          const before = await page.locator('.mini-v2-list-header .mini-v2-view-switch').boundingBox();
           if (width < 980) before.y += await page.evaluate(() => document.body.scrollTop);
           await toggle.click();
           assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
@@ -635,7 +635,7 @@ const firstCopy = '013-ZHESOL-01';
             ));
           }
           assert.ok(await page.locator('.mini-v2-copy-select').evaluateAll(nodes => nodes.every(n => n.__retained)));
-          const after = await page.locator('.mini-v2-view-switch').boundingBox();
+          const after = await page.locator('.mini-v2-list-header .mini-v2-view-switch').boundingBox();
           if (width < 980) after.y += await page.evaluate(() => document.body.scrollTop);
           if (JSON.stringify(after) !== JSON.stringify(before) && process.env.SCREENSHOT_PATH) {
             await page.screenshot({ path: process.env.SCREENSHOT_PATH.replace(/\.png$/, '-selector-failure.png') });
@@ -3209,10 +3209,10 @@ const firstCopy = '013-ZHESOL-01';
       assert.equal(resized.end, `translateX(${-resized.overflow}px)`);
     });
 
-    await check('long individual and group notes use slow pause-scroll-pause-reset without altering layout', async () => {
+    await check('individual notes marquee while group notes wrap without moving inventory', async () => {
       const longNotes = JSON.parse(JSON.stringify(data));
       const note = 'Purple and green variant <not markup>; blue cloak and silver trim. '.repeat(15);
-      const notes = 'Painting and collection notes <keep as text>.\n'.repeat(24);
+      const notes = 'Painting and collection notes <keep as text>. '.repeat(24);
       longNotes.groups[0].copies[0].note = note;
       longNotes.groups[0].copies[1].note = 'Blue cloak';
       longNotes.groups[0].notes = notes;
@@ -3223,10 +3223,10 @@ const firstCopy = '013-ZHESOL-01';
         await open(soldier);
         const geometry = () => page.locator('#miniV2DetailContent').evaluate(panel => ({
           rows: [...panel.querySelectorAll('.mini-v2-copy-row')].map(n => n.getBoundingClientRect().height),
-          noteHeight: panel.querySelector('.mini-v2-note-body').getBoundingClientRect().height,
           noteMargin: getComputedStyle(panel.querySelector('.mini-v2-note-body')).marginTop
         }));
         const before = await geometry();
+        const shortHeight = (await page.locator('.mini-v2-note-body').boundingBox()).height;
         await fresh(makeHtml(longNotes));
         await page.locator(`tr[data-group-id="${soldier}"]`).click();
         assert.deepEqual(await geometry(), before);
@@ -3234,8 +3234,9 @@ const firstCopy = '013-ZHESOL-01';
         assert.deepEqual(await geometry(), before);
         const values = page.locator('.mini-v2-copy-note-value');
         assert.equal(await values.first().locator('.mini-v2-marquee-text').textContent(), note);
-        assert.equal(await page.locator('.mini-v2-note-body .mini-v2-marquee-text').textContent(), notes);
-        assert.equal(await page.locator('.mini-v2-note-body').getAttribute('title'), notes);
+        assert.equal(await page.locator('.mini-v2-note-body').textContent(), notes);
+        assert.equal(await page.locator('.mini-v2-note-body .mini-v2-marquee-text').count(), 0);
+        assert((await page.locator('.mini-v2-note-body').boundingBox()).height > shortHeight * 2);
         assert.equal(await page.locator('.mini-v2-copy-note-cell').first().getAttribute('title'), note);
         assert.equal(await values.first().evaluate(n => !!n._miniV2MarqueeAnimation), true);
         assert.equal(await values.nth(1).evaluate(n => !!n._miniV2MarqueeAnimation), false);
@@ -3287,9 +3288,47 @@ const firstCopy = '013-ZHESOL-01';
         await page.emulateMedia({ reducedMotion: 'no-preference' });
         await settle();
         assert.equal(await values.first().evaluate(n => !!n._miniV2MarqueeAnimation), false);
-        assert.equal(await page.locator('.mini-v2-note-body').evaluate(n => !!n._miniV2MarqueeAnimation), true);
+        assert.equal(await page.locator('.mini-v2-note-body').evaluate(n => !!n._miniV2MarqueeAnimation), false);
         assert.deepEqual(await geometry(), before);
         assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
+    await check('multiline group notes preserve authored and blank lines without moving inventory columns', async () => {
+      const sample = JSON.parse(JSON.stringify(data));
+      const long = 'Blue cloak, silver trim, and a custom painted base. '.repeat(3) + 'x'.repeat(160);
+      sample.groups[0].notes = `First line\r\n\r\n${long}\nLast line\r`;
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await fresh(); await open(soldier);
+        const geometry = () => page.locator('.mini-v2-copy-table').evaluate(table => ({
+          width: table.getBoundingClientRect().width,
+          columns: [...table.querySelectorAll('thead th')].map(node => node.getBoundingClientRect().width)
+        }));
+        const before = await geometry();
+        await fresh(makeHtml(sample)); await open(soldier);
+        assert.deepEqual(await geometry(), before);
+        const body = page.locator('.mini-v2-note-body');
+        assert.equal(await body.textContent(), `First line\n\n${long}\nLast line\n`);
+        assert.equal(await body.locator('.mini-v2-marquee-text').count(), 0);
+        const layout = await body.evaluate(node => {
+          const range = document.createRange(), text = node.firstChild;
+          const top = offset => { range.setStart(text, offset); range.setEnd(text, offset + 1); return range.getBoundingClientRect().top; };
+          return { first: top(0), paragraph: top(12), last: top(text.textContent.indexOf('Last line')),
+            lineHeight: parseFloat(getComputedStyle(node).lineHeight), fits: node.scrollWidth <= node.clientWidth,
+            animated: node.getAnimations({ subtree: true }).length > 0 };
+        });
+        assert(Math.abs(layout.paragraph - layout.first - layout.lineHeight * 2) < 1, 'blank line must remain visible');
+        assert(layout.last - layout.paragraph > layout.lineHeight * 2, 'long paragraph must wrap');
+        assert(layout.fits && !layout.animated, 'group notes must neither overflow nor animate');
+        assert(await page.evaluate(() => document.body.scrollWidth <= innerWidth));
+        if (process.env.SCREENSHOT_PATH) {
+          await body.scrollIntoViewIfNeeded();
+          await page.locator('#miniV2DetailPanel').screenshot({
+            path: process.env.SCREENSHOT_PATH.replace(/\.png$/, `-multiline-notes-${width}.png`)
+          });
+        }
       }
       await page.setViewportSize({ width: 1440, height: 1000 });
     });

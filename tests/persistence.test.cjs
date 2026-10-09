@@ -365,11 +365,11 @@ test('storage also rejects invalid timestamps and fabricated receipt responses',
   assert.throws(() => server.validatePersistenceState_(next), error => error.code === 'INVALID');
 });
 
-test('all preparation functions remain private, excluded from clasp, with no network/storage effects', () => {
+test('all preparation functions remain private and pure, with no network/storage effects', () => {
   const source = read('Persistence.js');
   for (const match of source.matchAll(/^function\s+(\w+)\(/gm)) assert.ok(match[1].endsWith('_'), match[1]);
   assert.doesNotMatch(source, /SpreadsheetApp|DriveApp|UrlFetchApp|PropertiesService|\.setValues?\(|\bfetch\s*\(/);
-  assert.doesNotMatch(read('.claspignore'), /^!Persistence\.js\s*$/m);
+  assert.match(read('.claspignore'), /^!Persistence\.js\s*$/m);
   assert.doesNotMatch(read('Code.js') + read('Scripts.html'), /preparePersistenceChange_|migratePreviewForPersistence_/);
 });
 

@@ -1,0 +1,248 @@
+<script>
+  // Offline integration only: the caller supplies a transport, never a spreadsheet destination.
+  const MiniPersistenceClient = (() => {
+    const fields = ["size", "creatureType", "sex", "race", "role", "home", "paint", "set"];
+    const clone = value => JSON.parse(JSON.stringify(value));
+    const equal = (a, b) => MiniSaveFlow.equal(a, b);
+    const keyOf = target => JSON.stringify([target.table, target.id]);
+    const listKey = field => field === "location" ? "locations" : field;
+    const choiceView = choice => ({ id: choice.id, value: choice.value, home: choice.home,
+      hidden: !!choice.removedAt, locked: ["N/A", "NOT SPECIFIED"].includes(choice.value.toUpperCase()) });
+    function assert(ok, message) { if (!ok) throw new Error(message); }
+
+    function validateSnapshot(value, collectionId) {
+      assert(value?.protocolVersion === 1 && value.schemaVersion === 2 && typeof value.collectionId === "string"
+        && value.collectionId && (!collectionId || value.collectionId === collectionId)
+        && Number.isSafeInteger(value.revision) && value.revision >= 0, "Invalid collection snapshot");
+      for (const key of ["groups", "copies", "choices", "stickerCatalog"]) assert(Array.isArray(value[key]), "Incomplete collection snapshot");
+      const ids = new Set();
+      for (const item of [...value.groups, ...value.copies, ...value.choices]) {
+        const id = item.id || item.rootId;
+        assert(typeof id === "string" && id && !ids.has(id), "Invalid snapshot identity"); ids.add(id);
+      }
+      const groups = new Set(value.groups.map(group => group.rootId));
+      const choices = new Map(value.choices.map(choice => [choice.id, choice]));
+      const strings = (item, keys) => assert(keys.every(key => typeof item[key] === "string"), "Invalid record fields");
+      value.choices.forEach(choice => {
+        strings(choice, ["id", "field", "value", "removedAt"]);
+        assert([...fields.filter(field => field !== "home"), "location"].includes(choice.field)
+          && choice.value.trim() && typeof choice.home === "boolean" && Number.isSafeInteger(choice.sortOrder) && choice.sortOrder > 0, "Invalid catalog choice");
+      });
+      const ref = (id, field, blank = false) => assert(blank && id === "" || choices.get(id)?.field === field, "Unknown choice reference");
+      value.groups.forEach(group => {
+        strings(group, ["rootId", "name", "setNumber", "notes", "deletedAt", ...fields.map(field => field + "Id")]);
+        assert(group.name.trim(), "Missing group name");
+        fields.forEach(field => ref(group[field + "Id"], field === "home" ? "location" : field, true));
+      });
+      const active = new Set();
+      value.copies.forEach(copy => {
+        strings(copy, ["id", "rootId", "miniNumber", "sticker", "currentLocationId", "note", "deletedAt", "deletedWithGroup"]);
+        assert(groups.has(copy.rootId) && /^\d+$/.test(copy.miniNumber) && Number(copy.miniNumber) > 0, "Invalid copy");
+        ref(copy.currentLocationId, "location");
+        if (!copy.deletedAt) {
+          assert(!value.groups.find(group => group.rootId === copy.rootId).deletedAt, "Active copy of deleted group"); active.add(copy.rootId);
+        }
+      });
+      value.groups.forEach(group => assert(group.deletedAt || active.has(group.rootId), "Missing group copies"));
+      assert(value.stickerCatalog.length && new Set(value.stickerCatalog).size === value.stickerCatalog.length
+        && value.stickerCatalog.every(code => typeof code === "string" && /^[A-Z]\d{2}$/.test(code)), "Invalid sticker catalog");
+      for (const key of ["groups", "choices"]) {
+        const expected = key === "groups" ? groups : new Set(choices.keys()), seen = new Set();
+        assert(Array.isArray(value.tokens?.[key]), "Missing record versions");
+        value.tokens[key].forEach(item => {
+          assert(expected.has(item.id) && !seen.has(item.id) && /^[a-f\d]{64}$/.test(item.token), "Invalid record version"); seen.add(item.id);
+        });
+        assert(seen.size === expected.size, "Incomplete record versions");
+      }
+      return clone(value);
+    }
+
+    function createTransport({ snapshot, send }) {
+      const initial = validateSnapshot(snapshot);
+      assert(typeof send === "function", "A local test transport is required");
+      const collectionId = initial.collectionId;
+      let revision = initial.revision;
+      const knownChoices = new Map(initial.choices.map(choice => [choice.id, choice]));
+      const baselines = new Map(), observations = new Map(), requests = new Map();
+      const tokenOf = (source, target) => source.tokens[target.table === "groups" ? "groups" : "choices"].find(item => item.id === target.id)?.token || "";
+      const rawOf = (source, target) => target.table === "groups" ? source.groups.find(group => group.rootId === target.id)
+        : source.choices.find(choice => choice.id === target.id);
+      function remember(source) {
+        for (const group of source.groups) observations.set(source.tokens.groups.find(item => item.id === group.rootId).token, source);
+        for (const choice of source.choices) observations.set(source.tokens.choices.find(item => item.id === choice.id).token, source);
+      }
+      remember(initial);
+      for (const item of initial.tokens.groups) baselines.set(keyOf({ table: "groups", id: item.id }), item.token);
+      for (const choice of initial.choices) baselines.set(keyOf({ table: `lists:${listKey(choice.field)}`, id: choice.id }), tokenOf(initial, { table: "lists", id: choice.id }));
+      function label(source, id) {
+        // Other records may remain stale. A remote rename alone must not rebase their drafts.
+        return id === "" ? "" : (knownChoices.get(id) || source.choices.find(choice => choice.id === id)).value;
+      }
+      function groupView(source, id, order, deleted = false) {
+        const group = source.groups.find(item => item.rootId === id);
+        if (!group || (group.deletedAt && !deleted)) return null;
+        return { rootId: id, originalOrder: order ?? source.groups.indexOf(group), name: group.name, setNumber: group.setNumber, notes: group.notes,
+          ...Object.fromEntries(fields.map(field => [field, label(source, group[field + "Id"])])),
+          copies: Object.fromEntries(source.copies.filter(copy => copy.rootId === id && (!copy.deletedAt || (deleted && copy.deletedWithGroup === id))).map(copy => [copy.id, {
+            id: copy.id, miniNumber: copy.miniNumber, sticker: copy.sticker, note: copy.note, currentLocation: label(source, copy.currentLocationId)
+          }])) };
+      }
+      function view(source, target, id = target.id) {
+        if (target.table === "groups") return groupView(source, id, target.before?.originalOrder ?? target.value?.originalOrder);
+        const choice = source.choices.find(item => item.id === id);
+        return choice ? choiceView(choice) : null;
+      }
+      function initialState() {
+        const choiceRecords = {}, catalogs = {};
+        [...initial.choices].sort((a, b) => a.sortOrder - b.sortOrder).forEach(choice => {
+          (choiceRecords[listKey(choice.field)] ||= []).push(choiceView(choice));
+        });
+        for (const field of fields.filter(field => field !== "home")) catalogs[field] = (choiceRecords[field] || []).filter(choice => !choice.hidden).map(choice => choice.value);
+        const locations = choiceRecords.locations || [];
+        const groups = initial.groups.filter(group => !group.deletedAt).map(group => {
+          const value = groupView(initial, group.rootId);
+          return { ...value, copies: Object.values(value.copies).map(copy => ({ ...copy, rootId: value.rootId, home: value.home })) };
+        });
+        return { groups, catalogs, choiceRecords, locations: locations.map(choice => choice.value),
+          homeLocations: locations.filter(choice => choice.home && !choice.hidden).map(choice => choice.value), stickerCatalog: initial.stickerCatalog.slice() };
+      }
+      function reference(source, field, value) {
+        if (value === "" || value == null) return "";
+        const choices = new Map(source.choices.map(choice => [choice.id, choice]));
+        knownChoices.forEach((choice, id) => choices.set(id, choice));
+        const found = [...choices.values()].filter(choice => choice.field === field && choice.value === value);
+        assert(found.length === 1, `Choose a known ${field} value`);
+        return found[0].id;
+      }
+      function operation(target) {
+        const token = target.baseline || "", source = token ? observations.get(token) : initial;
+        assert(source && (!token || tokenOf(source, target) === token), "Missing original record version; reload before saving");
+        const raw = rawOf(source, target), value = target.value;
+        if (target.table !== "groups") {
+          assert(target.table.startsWith("lists:") && value, "Invalid list change");
+          const field = target.table.slice(6) === "locations" ? "location" : target.table.slice(6);
+          if (raw && value.hidden && !raw.removedAt) return { kind: "removeChoice", payload: { id: raw.id } };
+          if (raw?.removedAt && !value.hidden && value.value === raw.value && value.home === raw.home) return { kind: "restoreChoice", payload: { id: raw.id } };
+          return { kind: "saveChoice", payload: { id: raw && !raw.removedAt ? raw.id : "", field, value: value.value, home: value.home } };
+        }
+        if (target.restoreCopyId) return { kind: "restoreCopy", payload: { rootId: target.id, id: target.restoreCopyId } };
+        if (!value) { assert(raw && !raw.deletedAt, "Group is already removed"); return { kind: "deleteGroup", payload: { rootId: target.id } }; }
+        if (raw?.deletedAt && target.intent === "restore") {
+          return { kind: "restoreGroup", payload: { rootId: raw.rootId } };
+        }
+        const payload = { rootId: raw ? raw.rootId : "", fields: {
+          name: value.name, setNumber: value.setNumber, notes: value.notes,
+          ...Object.fromEntries(fields.map(field => [field + "Id", reference(source, field === "home" ? "location" : field, value[field])]))
+        }, copies: Object.values(value.copies).map(copy => ({
+          id: source.copies.some(item => item.id === copy.id && item.rootId === target.id) ? copy.id : "",
+          clientKey: copy.id, sticker: copy.sticker, note: copy.note, currentLocationId: reference(source, "location", copy.currentLocation)
+        })) };
+        if (raw?.deletedAt || payload.copies.some(copy => source.copies.some(item => item.id === copy.id && item.deletedAt))) return { kind: "restoreGroupAndSave", payload };
+        const before = target.before;
+        const locationOnly = before && equal({ ...before, copies: null }, { ...value, copies: null })
+          && equal(Object.keys(before.copies).sort(), Object.keys(value.copies).sort())
+          && Object.values(value.copies).every(copy => equal({ ...copy, currentLocation: null }, { ...before.copies[copy.id], currentLocation: null }));
+        const moved = payload.copies.filter(copy => value.copies[copy.clientKey].currentLocation !== before?.copies[copy.clientKey]?.currentLocation);
+        return locationOnly && moved.length ? { kind: "saveLocations", payload: { rootId: target.id,
+          copies: moved.map(({ id, currentLocationId }) => ({ id, currentLocationId })) } } : { kind: "saveGroup", payload };
+      }
+      function prepare(request) {
+        const prior = requests.get(request.requestId);
+        if (prior) { assert(equal(prior.input, request), "The pending request changed; retry the original request"); return prior.wire; }
+        assert(Array.isArray(request.targets) && request.targets.length, "No changes to save");
+        const operations = request.targets.map(operation), preconditions = { groups: [], choices: [] };
+        request.targets.forEach(target => { if (target.baseline) preconditions[target.table === "groups" ? "groups" : "choices"].push({ id: target.id, token: target.baseline }); });
+        const batch = operations.length > 1;
+        assert(!batch || operations.every(item => ["saveGroup", "saveLocations", "restoreGroupAndSave"].includes(item.kind)), "Lists and deletions must save separately");
+        const change = batch ? { kind: "saveBatch", payload: { changes: operations.map((item, index) => ({ ...item, clientKey: request.targets[index].id })) } } : operations[0];
+        const wire = { collectionId, requestId: request.requestId, expectedRevision: revision, preconditions, ...change };
+        requests.set(request.requestId, { input: clone(request), wire: clone(wire) });
+        return wire;
+      }
+      function record(source, target, id = target.id, copyIds = {}) {
+        return { table: target.table, id: target.id, value: view(source, target, id), persistedId: id, copyIds,
+          baseline: tokenOf(source, { ...target, id }) };
+      }
+      function accept(records) {
+        records.forEach(item => {
+          const source = observations.get(item.baseline);
+          assert(source, "Missing acknowledged record version");
+          revision = Math.max(revision, source.revision);
+          const target = { table: item.table, id: item.persistedId || item.id };
+          baselines.delete(keyOf(item)); baselines.set(keyOf(target), item.baseline);
+          // New referenced choices become usable without replacing versions of existing list drafts.
+          source.choices.forEach(choice => { if (!knownChoices.has(choice.id)) {
+            knownChoices.set(choice.id, choice);
+            baselines.set(keyOf({ table: `lists:${listKey(choice.field)}`, id: choice.id }), tokenOf(source, { table: "lists", id: choice.id }));
+          } });
+          if (target.table.startsWith("lists:")) knownChoices.set(target.id, rawOf(source, target));
+        });
+      }
+      function removed() {
+        const groups = [], copies = [];
+        baselines.forEach((token, key) => {
+          const [table, id] = JSON.parse(key);
+          if (table !== "groups") return;
+          const source = observations.get(token), group = rawOf(source, { table, id });
+          if (group.deletedAt) groups.push({ group: groupView(source, id, undefined, true), deletedAt: group.deletedAt });
+          source.copies.filter(copy => copy.rootId === id && copy.deletedAt && !copy.deletedWithGroup).forEach(copy => {
+            copies.push({ ...copy, groupName: group.name, parentDeleted: !!group.deletedAt, currentLocation: label(source, copy.currentLocationId) });
+          });
+        });
+        return clone({ groups, copies });
+      }
+      return {
+        initialState, removed,
+        capture: target => {
+          const baseline = baselines.get(keyOf(target)) || "";
+          const raw = baseline && rawOf(observations.get(baseline), target);
+          return { ...target, baseline, intent: target.table === "groups" && target.before === null && raw?.deletedAt ? "restore" : "save" };
+        },
+        accept,
+        choices: () => [...knownChoices.values()].map(choice => ({ key: listKey(choice.field), value: choiceView(choice) })),
+        async send(request) {
+          let wire;
+          try { wire = prepare(clone(request)); }
+          catch (error) { return { ok: false, code: requests.has(request.requestId) ? "REQUEST_REUSED" : "INVALID", message: error.message }; }
+          try {
+            const response = await send(clone(wire));
+            if (!response?.ok) {
+              assert(response && typeof response.code === "string" && typeof response.message === "string", "Missing save response");
+              if (response.code !== "STALE") return response;
+              const source = validateSnapshot(response.snapshot, collectionId);
+              assert(source.revision >= wire.expectedRevision, "Outdated conflict response");
+              const latest = request.targets.map(target => ({ ...record(source, target),
+                conflicted: (response.conflicts?.[target.table === "groups" ? "groups" : "choices"] || []).includes(target.id) || target.baseline !== tokenOf(source, target) }));
+              remember(source);
+              return { ok: false, code: "STALE", message: "This entry changed since you opened it.", latest };
+            }
+            assert(response.protocolVersion === 1 && response.collectionId === collectionId && response.requestId === request.requestId, "Unexpected acknowledgment");
+            const source = validateSnapshot(response.snapshot, collectionId), result = response.result;
+            assert(source.revision >= wire.expectedRevision, "Outdated acknowledgment");
+            assert(Number.isSafeInteger(result?.revision) && result.revision > 0 && result.revision <= source.revision, "Invalid acknowledgment revision");
+            const results = wire.kind === "saveBatch" ? result.changes : [result];
+            assert(Array.isArray(results) && results.length === request.targets.length, "Incomplete acknowledgment");
+            const records = request.targets.map((target, index) => {
+              const saved = wire.kind === "saveBatch" ? results.find(item => item.clientKey === target.id) : results[index];
+              const id = target.table === "groups" ? saved?.rootId : saved?.choiceId;
+              const operationKind = wire.kind === "saveBatch" ? wire.payload.changes[index].kind : wire.kind;
+              assert(id && (!target.baseline || id === target.id) && rawOf(source, { ...target, id }), "Wrong acknowledged identity");
+              const created = saved.createdCopies || [], copyIds = Object.fromEntries(created.map(item => [item.clientKey, item.id]));
+              const payload = wire.kind === "saveBatch" ? wire.payload.changes[index].payload : wire.payload;
+              if (["saveGroup", "restoreGroupAndSave"].includes(operationKind)) {
+                const added = payload.copies.filter(copy => !copy.id);
+                assert(created.length === added.length && new Set(created.map(item => item.id)).size === created.length
+                  && added.every(copy => created.filter(item => item.clientKey === copy.clientKey).length === 1)
+                  && created.every(item => source.copies.some(copy => copy.id === item.id && copy.rootId === id)), "Incomplete new-copy mapping");
+              }
+              return record(source, target, id, copyIds);
+            });
+            remember(source);
+            return { ok: true, replayed: !!response.replayed, result: { revision: source.revision, records } };
+          } catch (_) { return { ok: false, code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Retry to check the same save." }; }
+        }
+      };
+    }
+    return { createTransport, validateSnapshot };
+  })();
+</script>

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!--REHEARSAL_STARTUP-->
+    <?!= rehearsalInclude_("Styles", loadTiming); ?>
+  </head>
+  <body>
+    <div id="app"></div>
+    <?!= rehearsalInclude_("SaveFlow", loadTiming); ?>
+    <?!= rehearsalInclude_("PersistenceClient", loadTiming); ?>
+    <?!= rehearsalInclude_("RehearsalTransport", loadTiming); ?>
+    <script>
+      const INITIAL_STATE = { rehearsalMode: true, persistenceSnapshot: <?!= snapshotJson ?> };
+    </script>
+    <?!= rehearsalInclude_("Scripts", loadTiming); ?>
+    <script>MiniRehearsalStartup.ready();</script>
+  </body>
+</html>

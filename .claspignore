@@ -1,8 +1,15 @@
-# Only application files belong in the Apps Script project.
+# Run node tools/build-live.cjs first. Paths are relative to the generated rootDir.
 **/**
 !appsscript.json
 !Code.js
-!Storage.js
+!CollectionHash.js
+!CollectionRead.js
+!CollectionTransport.html
+!FastIndex.html
+!Persistence.js
+!PersistenceAdapter.js
+!PersistenceContract.js
+!PersistenceClient.html
 !Index.html
 !Scripts.html
 !Styles.html

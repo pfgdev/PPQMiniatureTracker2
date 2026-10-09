@@ -384,8 +384,9 @@ test('optional imported 496-group commit preserves all 612 copies, blanks and aw
   assert.ok(Buffer.byteLength(JSON.stringify(f.batches[0])) < 2_000_000, 'representative batch stays below recommended API payload size');
 });
 
-test('adapter stays private, excluded from deployment and disconnected from live preview', () => {
+test('adapter stays private and preview fixtures remain disconnected from the writer', () => {
   for (const match of read('PersistenceAdapter.js').matchAll(/^function\s+(\w+)\(/gm)) assert.ok(match[1].endsWith('_'));
-  assert.doesNotMatch(read('.claspignore'), /^!Persistence(?:Adapter)?\.js$/m);
+  assert.equal(JSON.parse(read('.clasp.json')).rootDir, '.local/live/app');
+  assert.match(read('.claspignore'), /^!PersistenceAdapter\.js$/m);
   for (const file of ['Code.js', 'Storage.js', 'Scripts.html']) assert.doesNotMatch(read(file), /savePersistenceRequest_|persistenceAdapterExecute_/);
 });

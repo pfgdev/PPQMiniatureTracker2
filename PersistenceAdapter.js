@@ -1,4 +1,4 @@
-// Disabled, private transport rehearsal. Excluded from clasp; not called by the UI.
+// Disabled, private transport rehearsal. Excluded from clasp; only the local harness calls it.
 // Activation requires a reviewed migration, owner access, and a disposable-sheet test.
 function persistenceAdapterConfig_() {
   return { enabled: false, spreadsheetId: "", collectionId: "", ownerEmail: "", lockTimeoutMs: 5000 };
@@ -113,7 +113,7 @@ function persistenceAdapterBatch_(snapshot, nextState) {
 }
 
 // Config/runtime are trusted server dependencies, never arguments to a public RPC.
-function persistenceAdapterExecute_(request, config, runtime) {
+function persistenceAdapterExecute_(request, config, runtime, projectSnapshot) {
   persistenceAdapterAuthorize_(config, runtime);
   if (!request || request.collectionId !== config.collectionId) persistenceError_("INVALID", "Unexpected requested collection");
   var lock = runtime.lock(), acquired = false;
@@ -124,7 +124,14 @@ function persistenceAdapterExecute_(request, config, runtime) {
     try { book = runtime.read(config.spreadsheetId, persistenceAdapterReadOptions_()); }
     catch (_) { persistenceError_("READ_FAILED", "Could not read the collection. No write was attempted; keep your changes and retry"); }
     var snapshot = persistenceAdapterSnapshot_(book, config);
-    var prepared = preparePersistenceChange_(snapshot.state, request, runtime.services);
+    var prepared;
+    try { prepared = preparePersistenceChange_(snapshot.state, request, runtime.services); }
+    catch (error) {
+      if (error.code === "STALE" && projectSnapshot) error.clientSnapshot = projectSnapshot(snapshot.state, runtime.services);
+      throw error;
+    }
+    // Build the acknowledgment from the locked state before attempting a commit.
+    var clientSnapshot = projectSnapshot ? projectSnapshot(prepared.state, runtime.services) : null;
     if (!prepared.replayed) {
       var batch = persistenceAdapterBatch_(snapshot, prepared.state);
       try {
@@ -135,7 +142,9 @@ function persistenceAdapterExecute_(request, config, runtime) {
         persistenceError_("SAVE_UNCERTAIN", "Save could not be confirmed. Keep this draft and retry the exact same request", { requestId: request.requestId });
       }
     }
-    return { result: prepared.result, replayed: prepared.replayed, currentRevision: prepared.state.revision };
+    var response = { result: prepared.result, replayed: prepared.replayed, currentRevision: prepared.state.revision };
+    if (clientSnapshot) response.snapshot = clientSnapshot;
+    return response;
   } finally {
     if (acquired) {
       // Apps Script also releases at execution end; do not turn an acknowledged save into a reported failure.

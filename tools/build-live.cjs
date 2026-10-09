@@ -1,0 +1,21 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const { buildFiles } = require('./app/build.cjs');
+const root = path.resolve(__dirname, '..');
+const configPath = path.join(root, '.local/live/config.json');
+assert(fs.existsSync(configPath), 'Missing trusted live configuration at .local/live/config.json. Do not substitute the rehearsal configuration.');
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+const target = JSON.parse(fs.readFileSync(path.join(root, '.clasp.json'), 'utf8'));
+assert.equal(config.scriptId, target.scriptId, 'Live build must match the root clasp project');
+assert.equal(config.spreadsheetId, '1JxWeleWT2upYOmenJmXhbxmbo5WW7nsxPHbcuXPmVHY', 'Wrong live workbook');
+const files = buildFiles(config, { live: true });
+const output = path.join(root, '.local/live/app');
+fs.mkdirSync(output, { recursive: true });
+assert(fs.readdirSync(output).every(name => Object.hasOwn(files, name)), 'Unexpected file in live output; inspect before uploading');
+for (const [name, source] of Object.entries(files)) fs.writeFileSync(path.join(output, name), source);
+const upload = { files: Object.entries(files).map(([file, source]) => ({ name: file.slice(0, file.lastIndexOf('.')),
+  type: file.endsWith('.js') ? 'SERVER_JS' : file.endsWith('.html') ? 'HTML' : 'JSON', source })) };
+fs.writeFileSync(path.join(root, '.local/live/upload.json'), JSON.stringify(upload));
+console.log(JSON.stringify({ mode: 'live', files: Object.keys(files), ownerOnly: true, diagnostics: false, output }));
