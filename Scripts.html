@@ -2512,7 +2512,7 @@
       const setNumber = detailContentNode.querySelector('[data-edit-field="setNumber"]');
       setNumber.disabled = !hasNamedSet(state.editor.fields);
       setNumber.value = setNumber.disabled ? "" : state.editor.fields.setNumber;
-      setNumber.title = setNumber.disabled ? "Set # does not apply without a named set" : "Set number, such as 40 or 4a";
+      setNumber.title = setNumber.disabled ? "Set # does not apply without a named set" : "Set number, such as 40 or 4a; n/a for an unnumbered set";
       detailHeaderTagsNode.innerHTML = renderDetailTag(state.editor.isNew ? "New" : changed || state.editor.hasPendingLocations ? "Editing *" : "Editing", "is-neutral");
       const save = detailContentNode.querySelector('[data-action="save-edit"]');
       if (save) {
@@ -2629,7 +2629,7 @@
           }
         }
         if (hasNamedSet(editor.fields) && !editor.fields.setNumber.trim()) {
-          return { message: "Enter Set # for the selected set before creating this group.", selector: "#miniV2EditSetNumber" };
+          return { message: "Enter Set #, or n/a if this set has no numbers.", selector: "#miniV2EditSetNumber" };
         }
       }
       const copies = retainedEditorCopies(group, editor);
@@ -2637,8 +2637,8 @@
         return { message: "Add at least one copy before saving.", selector: '[data-action="add-copy"]' };
       }
       const setNumber = editor.fields.setNumber.trim();
-      if (hasNamedSet(editor.fields) && setNumber !== initial.fields.setNumber && !/^(?:\d[a-z\d]{0,2})?$/i.test(setNumber)) {
-        return { message: "Use up to three characters for Set #, starting with a digit (for example, 40 or 4a).", selector: "#miniV2EditSetNumber" };
+      if (hasNamedSet(editor.fields) && setNumber !== initial.fields.setNumber && !/^(?:\d[a-z\d]{0,2}|n\/a)?$/i.test(setNumber)) {
+        return { message: "Use up to three characters for Set #, starting with a digit (for example, 40 or 4a), or n/a for an unnumbered set.", selector: "#miniV2EditSetNumber" };
       }
       const assignedStickers = options.skipStickerCheck ? new Set() : reservedStickerIds(group.rootId);
       const stickerKey = value => String(value || "").trim().toUpperCase();

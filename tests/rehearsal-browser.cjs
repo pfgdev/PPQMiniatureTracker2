@@ -210,6 +210,50 @@ const live = process.env.LIVE_BUILD === '1';
       await load(); await open(group.rootId); await action('edit-mini').click(); await action('add-copy').click();
       assert.equal(await action('apply-next-sticker').innerText(), 'Apply A03');
     });
+    await check('unnumbered named sets accept n/a while no-set blanks stay complete after save/reload', async () => {
+      await open(); await action('edit-mini').click();
+      const number = page.locator('[data-edit-field="setNumber"]');
+      const status = action('toggle-detail-status');
+      const summary = page.locator('.mini-v2-set-field .mini-v2-read-value');
+      await number.fill(''); await action('save-edit').click(); await settle();
+      await load(); await open();
+      assert.equal(await status.getAttribute('aria-label'), 'Group record incomplete');
+      assert.match(await summary.textContent(), /# not entered/);
+      await action('edit-mini').click();
+      assert.match(await number.getAttribute('title'), /n\/a for an unnumbered set/);
+      await number.fill('n/a'); await action('save-edit').click(); await settle();
+      await load(); await open();
+      assert.equal(await status.getAttribute('aria-label'), 'Group record complete');
+      assert.equal(await summary.textContent(), 'Owned Set (n/a)');
+      assert.equal(f.base.stored().groups[0].setNumber, 'n/a');
+      await action('edit-mini').click();
+      await number.fill('abc'); await action('save-edit').click();
+      assert.equal(await number.getAttribute('aria-invalid'), 'true');
+      assert.match(await page.locator('#miniV2EditorError').innerText(), /n\/a for an unnumbered set/);
+      await number.fill('');
+      await page.locator('[data-edit-field="set"]').selectOption('n/a');
+      assert.equal(await number.isDisabled(), true);
+      await action('save-edit').click(); await settle(); await load(); await open();
+      assert.equal(await status.getAttribute('aria-label'), 'Group record complete');
+      assert.equal(await summary.textContent(), 'n/a');
+      assert.equal(f.base.stored().groups[0].setNumber, '');
+
+      // New records require an explicit number decision only when a named set is chosen.
+      await action('new-group').click(); await page.locator('#miniV2EditName').fill('Unnumbered set miniature');
+      for (const [key, value] of Object.entries({ size: 'Medium', creatureType: 'Humanoid', race: 'Human', sex: 'Male', role: 'Melee', set: 'Owned Set', paint: 'Painted', home: 'Drawer' })) {
+        await page.locator(`[data-edit-field="${key}"]`).selectOption(value);
+      }
+      await action('apply-next-sticker').click();
+      assert.equal(await action('save-edit').isDisabled(), true);
+      await number.fill('N/A');
+      assert.equal(await action('save-edit').isDisabled(), false);
+      await action('save-edit').click(); await settle();
+      const added = f.base.stored().groups.find(g => g.name === 'Unnumbered set miniature');
+      assert.equal(added.setNumber, 'N/A');
+      await load(); await open(added.rootId);
+      assert.equal(await status.getAttribute('aria-label'), 'Group record complete');
+      assert.equal(await summary.textContent(), 'Owned Set (N/A)');
+    });
     await check('deleted groups restore after reload through the real RPC boundary', async () => {
       await open(); await edit('Unsaved draft'); await action('delete-group').click(); await action('confirm-delete-group').click(); await settle();
       await load(); assert.equal(await page.locator('tr[data-group-id="one"]').count(), 0);

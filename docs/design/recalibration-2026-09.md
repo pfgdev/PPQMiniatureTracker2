@@ -3,7 +3,9 @@
 ## October 9 Live Activation
 
 The owner approved going live after the private save and startup rehearsals.
-Production version 4 now uses the real 2.0 workbook with owner-only access.
+Production launched as version 4 against the real 2.0 workbook with owner-only
+access. The owner confirmed hosted save/reload; version 5 adds support for `n/a`
+Set # on named, unnumbered sets while preserving blank numbers for Set = `n/a`.
 The migration preserved the full 496-group / 612-copy imported collection,
 including 19 away copies and existing blanks; no rehearsal edits were promoted.
 Private pre-migration and schema-compatible baseline copies are verified.
@@ -16,7 +18,7 @@ preview-only deployment instructions below are superseded.
 
 See [current development instructions](../development.md) and the
 [activation record](../rollout-and-rollback.md) for the live URL, exact identities,
-backup links and remaining owner-side authorization/save verification.
+backup links and hosted verification history.
 
 ## Historical Handoff
 

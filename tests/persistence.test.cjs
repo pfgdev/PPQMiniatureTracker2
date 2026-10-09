@@ -132,6 +132,29 @@ test('explicit no-set choices need no number, while historical missing/long Set 
   rejectsUnchanged(server, state, request(state, 'saveGroup', value), 'INVALID');
 });
 
+for (const number of ['n/a', 'N/A', ' n/a ', '0', '007', '4a']) {
+  test(`named sets accept explicit Set # ${JSON.stringify(number)} on create and edit`, () => {
+    const { server, state } = fixture(), added = newGroup(state), edited = payload(state);
+    for (const value of [added, edited]) {
+      value.fields.setNumber = number;
+      const next = change(server, state, 'saveGroup', value).state;
+      const group = value.rootId ? next.groups[0] : next.groups[1];
+      assert.equal(group.setNumber, number.trim());
+      assert.equal(group.setId, value.fields.setId);
+    }
+  });
+}
+
+for (const number of ['abc', 'n-a', 'na', 'n/a1', '1234']) {
+  test(`named sets still reject invalid new Set # ${JSON.stringify(number)}`, () => {
+    const { server, state } = fixture();
+    for (const value of [newGroup(state), payload(state)]) {
+      value.fields.setNumber = number;
+      rejectsUnchanged(server, state, request(state, 'saveGroup', value), 'INVALID');
+    }
+  });
+}
+
 test('location Save preserves unrelated fields and cannot move another group or deleted copy', () => {
   const { server, state } = fixture();
   const value = { rootId: 'old-root', copies: [{ id: 'old-01', currentLocationId: choice(state, 'location', 'Drawer') }] };

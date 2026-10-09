@@ -6,10 +6,11 @@ The owner approved production activation after the hosted rehearsal. The live
 build targets the original 2.0 workbook, not the disposable test collection.
 Migration/deployment evidence and activation status are recorded in
 [rollout and rollback](rollout-and-rollback.md). Do not copy rehearsal data back.
-Version 4 is now published at the [owner-only live URL](https://script.google.com/macros/s/AKfycbzC3N1pZaLkodNlBfxnkBLquhP5faZSCB4NCN7fD0IFIrgSk5lBBNsl9Nav0eJV18hA/exec).
+Version 5 is now published at the [owner-only live URL](https://script.google.com/macros/s/AKfycbzC3N1pZaLkodNlBfxnkBLquhP5faZSCB4NCN7fD0IFIrgSk5lBBNsl9Nav0eJV18hA/exec).
 The workbook migration and backup comparisons passed. The owner confirmed the
-live app loads the expected collection without rehearsal UI. Final hosted
-save/reload is pending; old preview links are not the live app.
+live app loads the expected collection without rehearsal UI and a real change
+survives save/reload. Version 5 adds explicit `n/a` Set # for unnumbered sets;
+Set = `n/a` still needs no number. Old preview links are not the live app.
 
 Production and rehearsal share `tools/app/build.cjs`. `tools/app/live.cjs`
 removes rehearsal notices, timing UI, simulator code and browser test hooks,

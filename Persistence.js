@@ -226,8 +226,8 @@ function persistenceSaveGroup_(state, payload, services, now) {
   var namedSet = set && !persistenceSentinel_(set.value);
   var number = payload.fields.setNumber.trim();
   if (namedSet) {
-    persistenceAssert_(!isNew || !!number, "Enter Set #");
-    persistenceAssert_(number === previous.setNumber || /^(?:\d[a-z\d]{0,2})?$/i.test(number), "Invalid Set #");
+    persistenceAssert_(!isNew || !!number, "Enter Set #, or n/a if this set has no numbers");
+    persistenceAssert_(number === previous.setNumber || /^(?:\d[a-z\d]{0,2}|n\/a)?$/i.test(number), "Invalid Set #");
   }
   persistenceAssert_(Array.isArray(payload.copies) && payload.copies.length > 0, "Add at least one copy");
   if (isNew) {

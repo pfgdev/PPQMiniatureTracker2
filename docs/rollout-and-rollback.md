@@ -2,8 +2,9 @@
 
 Status: production activation explicitly approved and deployed on October 9.
 The real 2.0 workbook is migrated, with exact readback and private backups verified.
-Owner-only live version 4 is published. The owner confirmed the live URL loads
-612 miniatures / 496 groups without rehearsal UI; final save/reload is pending.
+Owner-only live version 5 is published. The owner confirmed the initial live URL
+loads 612 miniatures / 496 groups without rehearsal UI and that a live change
+survives saving and reloading. The launch save check is complete (owner-reported).
 The owner previously confirmed
 single saves, Save All, copy addition/removal, group deletion/restore, list
 operations and two-tab conflicts in the isolated rehearsal.
@@ -34,12 +35,26 @@ operations and two-tab conflicts in the isolated rehearsal.
   Use the new live URL rather than those old preview links.
 - The legacy workbook's modification time remains September 7. Its data was not
   written. Rehearsal data and deployment were not modified by this rollout.
-- Code checkpoint: `b920028`. Verification: 357 automated tests and 16 clean-live
-  browser checks passed. Browser checks use simulated Google RPC/storage; they
-  do not substitute for the remaining hosted check.
+- Code checkpoint: `b920028`. Initial verification: 357 automated tests and 16
+  clean-live browser checks passed. Browser checks use simulated Google RPC/storage.
 - Owner confirmed the live URL loads 612 miniatures / 496 groups without the
-  rehearsal banner. Final save/reload is pending; no live user edit is yet claimed
-  verified. Code and deployment records were pushed to `main` at `b83be22`.
+  rehearsal banner, then confirmed a real change survived save/reload. Code and
+  initial deployment records were pushed to `main` at `b83be22`.
+
+## First Live Fix: Unnumbered Sets
+
+The A32 report exposed a named set without collector numbers. Version 5 accepts
+`n/a` (case-insensitive) in Set # in both the editor and backend, on creation and
+editing. Blank Set # with Set = `n/a` remains valid and complete; a named set with
+a blank number still flags a missing number. Existing numeric/variant values and
+legacy-value preservation are unchanged. No collection data was edited by this
+release; A32 must be explicitly updated by its owner if desired.
+
+The same owner-only URL was updated, with matching uploaded/versioned sources;
+only Scripts, Persistence and generated FastIndex changed. All 368 automated
+tests, 17 clean-live browser scenarios and three focused set-number regression
+scenarios passed. These cover both no-set blanks and explicit unnumbered-set
+values through save/reload; the hosted A32 correction itself is not yet verified.
 
 **October 9 scope decision:** The owner does not want an extensive backup/recovery
 rehearsal. It is not a launch requirement. Keep a fresh private workbook copy at
