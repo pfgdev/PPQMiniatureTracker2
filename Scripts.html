@@ -96,6 +96,8 @@
       browseScroll: { groups: null, individuals: null },
       collectionView: "",
       previousBrowse: null,
+      pendingReturn: null,
+      pendingSaved: false,
       summaryPanel: "",
       search: "",
       locationFilter: "all",
@@ -133,6 +135,16 @@
         locked: ["n/a", UNSPECIFIED_VALUE.toLowerCase()].includes(value.toLowerCase())
       }));
     });
+
+    const saveTransport = MiniSaveFlow.createSimulator([
+      ...state.groups.map(group => ({ table: "groups", id: group.rootId, value: saveGroupRecord(group) })),
+      ...Object.entries(listManager.catalogs).flatMap(([key, choices]) => choices.map(choice => ({ table: `lists:${key}`, id: choice.id, value: choice })))
+    ]);
+    let saveJob = null;
+    let nextSaveOutcome = "success";
+    if (INITIAL_STATE.saveTestMode === true) window.__miniSaveTest = {
+      transport: saveTransport, job: () => saveJob && MiniSaveFlow.clone({ request: saveJob.request, status: saveJob.status })
+    };
 
     let root;
     let listDialogNode;
@@ -191,7 +203,7 @@
       new ResizeObserver(() => syncDesktopLayoutMetrics()).observe(workspaceNode);
       reducedMotionMq.addEventListener("change", () => scheduleDetailMarqueeSync(0));
       window.addEventListener("beforeunload", event => {
-        if (!editorDraftIds().length && !state.groups.some(group => group.copies.some(isDirty))
+        if (!saveJob && !editorDraftIds().length && !state.groups.some(group => group.copies.some(isDirty))
           && !Object.entries(listManager.forms).some(([key, form]) => {
             const choice = listManager.catalogs[key].find(item => item.id === form.id);
             return form.mode !== "remove" && (choice ? form.name !== choice.value || form.home !== choice.home : !!form.name.trim());
@@ -247,7 +259,12 @@
             <section class="v2-card mini-v2-table-card">
               <div id="miniV2ListStage" class="mini-v2-list-stage">
                 <div class="v2-card-header mini-v2-list-header">
-                  <span>Browse<span class="mini-v2-browse-title-tail"> Minis</span></span>
+                  <span class="mini-v2-browse-heading">
+                    <button id="miniV2BrowseBack" type="button" class="button mini-v2-browse-back" data-action="leave-pending" aria-label="Back to previous browse view" title="Back to previous browse view" hidden>
+                      <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 10H4m6-6-6 6 6 6"/></svg>
+                    </button>
+                    <span id="miniV2BrowseTitle">Browse<span class="mini-v2-browse-title-tail"> Minis</span></span>
+                  </span>
                   <span id="miniV2ListHeaderNote" class="mini-v2-list-header-note" hidden></span>
                   <div class="mini-v2-view-switch" role="group" aria-label="Browse view">
                     <button type="button" data-browse-mode="groups" aria-pressed="true">Groups</button>
@@ -466,6 +483,7 @@
     }
 
     function renderAll(options = {}) {
+      releaseSaveLocks();
       const resumedEditor = !state.editor && state.editorDrafts[state.selectedRootId];
       if (resumedEditor) {
         state.editor = resumedEditor;
@@ -484,6 +502,7 @@
       renderTable(rows);
       if (!options.keepDetail) renderDetail();
       syncDetailCopyTarget();
+      syncSaveUI();
       return !!resumedEditor;
     }
 
@@ -605,7 +624,11 @@
           Object.keys(locations).forEach(id => { if (locations[id] === before) locations[id] = after; });
         });
       }
-      [state, state.previousBrowse].filter(Boolean).forEach(browse => {
+      const browseContexts = [state, state.pendingReturn];
+      for (const context of browseContexts.slice()) {
+        for (let previous = context?.previousBrowse; previous; previous = previous.previousBrowse) browseContexts.push(previous);
+      }
+      [...new Set(browseContexts)].filter(Boolean).forEach(browse => {
         if (key === "locations" && browse.locationFilter === before) browse.locationFilter = after;
         if (key === "set" && browse.filtersApplied.set === before) browse.filtersApplied.set = after;
         const kind = LIST_DEFINITIONS.find(definition => definition.key === key).kind || (key === "paint" ? "paints" : "");
@@ -640,6 +663,7 @@
     }
 
     function renderListManager() {
+      releaseSaveLocks();
       const definition = LIST_DEFINITIONS.find(item => item.key === listManager.key);
       listDialogNode.querySelector(".mini-v2-lists-nav").innerHTML = LIST_DEFINITIONS.map(item =>
         `<button type="button" data-list-key="${item.key}" aria-current="${item.key === definition.key ? "true" : "false"}">${item.label}</button>`).join("");
@@ -650,6 +674,7 @@
       document.getElementById("miniV2ListsCount").textContent = `${count} ${count === 1 ? "choice" : "choices"}`;
       document.getElementById("miniV2ListsSearch").value = listManager.query;
       renderListChoiceForm(); renderListChoiceRows(); renderListNotice();
+      syncSaveUI();
     }
 
     function renderListChoiceRows() {
@@ -708,6 +733,7 @@
     }
 
     function syncListForm() {
+      releaseSaveLocks();
       const form = listManager.forms[listManager.key];
       if (!form || form.mode === "remove") return;
       const error = listFormError();
@@ -719,6 +745,7 @@
       button.textContent = duplicate?.hidden ? "Restore choice" : form.id ? "Save changes" : "Add";
       button.title = error;
       document.getElementById("miniV2ListName").setAttribute("aria-invalid", String(!!error && !!form.name.trim()));
+      syncSaveUI();
     }
 
     function renderListNotice() {
@@ -730,41 +757,46 @@
 
     function saveListChoice() {
       const key = listManager.key, form = listManager.forms[key];
-      if (!form || listFormError()) return;
+      if (!form || listFormError() || saveJob) return;
       const choice = listManager.catalogs[key].find(item => item.id === form.id);
       if (choice?.locked) return;
+      let target = choice, value;
       if (form.mode === "remove") {
         if (!choice || choice.hidden) return;
-        choice.hidden = true;
-        listManager.undo.push({ key, id: choice.id });
-        listManager.notice = `Removed ${choice.value} from future choices.`;
+        value = { ...choice, hidden: true };
       } else {
         const name = form.name.trim();
         const duplicate = listManager.catalogs[key].find(item => item.id !== form.id && item.value.toLowerCase() === name.toLowerCase());
         if (duplicate?.hidden) {
           if (choice) { listManager.notice = "Restore the removed choice using Add before making this rename."; renderListNotice(); return; }
-          duplicate.hidden = false;
-          if (key === "locations") duplicate.home = duplicate.home || form.home;
-          listManager.notice = `Restored ${duplicate.value}. Miniature assignments are unchanged.`;
+          target = duplicate; value = { ...duplicate, hidden: false, home: duplicate.home || !!form.home };
         } else if (choice) {
           if (key === "locations" && choice.home && !form.home && listHomeInUse(choice.value)) return;
-          if (choice.value !== name) renameListReferences(key, choice.value, name);
-          choice.value = name; choice.home = !!form.home;
-          listManager.notice = `Updated ${name}. Existing assignments keep their meaning.`;
+          value = { ...choice, value: name, home: !!form.home };
         } else {
-          listManager.catalogs[key].push({ id: `choice-${listManager.nextId++}`, value: name, home: !!form.home, hidden: false, locked: false });
-          listManager.notice = `Added ${name}. Available in your dropdowns.`;
+          value = { id: `choice-${listManager.nextId++}`, value: name, home: !!form.home, hidden: false, locked: false };
         }
       }
-      delete listManager.forms[key]; listManager.query = "";
-      syncListChoices();
-      renderAllPreservingScroll(null, { keepSelection: true });
-      renderListManager();
-      listDialogNode.querySelector('[data-list-action="add"]').focus({ preventScroll: true });
+      startSave([{ table: `lists:${key}`, id: value.id, before: target || null, value }], {
+        listKey: key, action: "save", apply: records => applyListSave(key, records[0].value, true)
+      });
+    }
+
+    function applyListSave(key, value, clearForm = false) {
+      const previous = listManager.catalogs[key].find(choice => choice.id === value.id);
+      if (previous && previous.value !== value.value) renameListReferences(key, previous.value, value.value);
+      if (value.hidden && !previous?.hidden) listManager.undo.push({ key, id: value.id });
+      listManager.catalogs[key] = previous ? listManager.catalogs[key].map(choice => choice.id === value.id ? value : choice)
+        : listManager.catalogs[key].concat(value);
+      listManager.notice = value.hidden ? `Removed ${value.value} from future choices.` : `Saved ${value.value}. Available in your dropdowns.`;
+      if (clearForm) delete listManager.forms[key];
+      listManager.query = ""; syncListChoices();
     }
 
     function handleListManagerClick(event) {
       event.stopPropagation();
+      const feedback = event.target.closest('[data-save-action]');
+      if (feedback) { if (!feedback.disabled) handleSaveAction(feedback.dataset.saveAction); return; }
       const category = event.target.closest("button[data-list-key]");
       if (category) {
         listManager.key = category.dataset.listKey; listManager.query = "";
@@ -775,20 +807,20 @@
       const button = event.target.closest("button[data-list-action]");
       if (!button || button.disabled) return;
       const action = button.dataset.listAction, key = listManager.key;
+      if (saveJob && ["save", "undo"].includes(action)) { handleSaveAction("retry"); return; }
       if (action === "close") { closeListManager(); return; }
       if (action === "save") { saveListChoice(); return; }
       if (action === "undo") {
         let record, choice;
         while (listManager.undo.length && !choice) {
-          record = listManager.undo.pop();
+          record = listManager.undo.at(-1);
           choice = listManager.catalogs[record.key].find(item => item.id === record.id && item.hidden);
+          if (!choice) listManager.undo.pop();
         }
         if (!choice) { renderListNotice(); return; }
-        choice.hidden = false; listManager.key = record.key; listManager.query = "";
-        listManager.notice = `Restored ${choice.value}. Miniature assignments are unchanged.`;
-        syncListChoices(); renderAllPreservingScroll(null, { keepSelection: true }); renderListManager();
-        (document.getElementById("miniV2ListName") || listDialogNode.querySelector('[data-list-action="add"]:not(:disabled)')
-          || listDialogNode.querySelector('[data-list-action="close"]')).focus({ preventScroll: true });
+        startSave([{ table: `lists:${record.key}`, id: choice.id, before: choice, value: { ...choice, hidden: false } }], {
+          listKey: record.key, action: "undo", apply: records => applyListSave(record.key, records[0].value)
+        });
         return;
       }
       if (action === "cancel") delete listManager.forms[key];
@@ -800,11 +832,14 @@
       }
       renderListChoiceForm();
       renderListChoiceRows();
+      syncSaveUI();
       (document.getElementById("miniV2ListName") || listDialogNode.querySelector(`[data-list-action="${action === "cancel" ? "add" : "cancel"}"]`)).focus({ preventScroll: true });
     }
 
     function handleListManagerInput(event) {
       event.stopPropagation();
+      if (event.target.disabled) return;
+      if (handleSaveInput(event.target)) return;
       const node = event.target;
       if (node.id === "miniV2ListsSearch") { listManager.query = node.value; renderListChoiceRows(); return; }
       if (node.id === "miniV2ListsPicker") {
@@ -818,13 +853,334 @@
       syncListForm();
     }
 
+    function saveGroupRecord(group) {
+      return { rootId: group.rootId, originalOrder: group.originalOrder,
+        ...Object.fromEntries(EDIT_FIELDS.map(field => [field, group[field] ?? ""])),
+        copies: Object.fromEntries(group.copies.map(copy => [copy.id, {
+          id: copy.id, miniNumber: copy.miniNumber, sticker: copy.sticker || "", note: copy.note || "", currentLocation: copy.currentLocation
+        }])) };
+    }
+
+    function savedRecordGroup(value) {
+      return enrichGroup({ ...value, copies: Object.values(value.copies).map(copy => ({ ...copy, rootId: value.rootId, home: value.home })) });
+    }
+
+    function groupSaveTarget(group, value) {
+      const existing = state.groups.find(item => item.rootId === group.rootId);
+      return { table: "groups", id: group.rootId, before: existing ? saveGroupRecord(existing) : null,
+        value: value ? saveGroupRecord(value) : null };
+    }
+
+    function startSave(targets, options) {
+      if (saveJob) return;
+      saveJob = { ...options, request: MiniSaveFlow.clone({ requestId: newMockId("request"), targets }),
+        status: "saving", error: null };
+      saveTransport.setOutcome(nextSaveOutcome); nextSaveOutcome = "success";
+      sendSave();
+    }
+
+    async function sendSave() {
+      const job = saveJob;
+      if (!job || job.sending) return;
+      job.sending = true; job.status = "saving";
+      syncSaveUI();
+      let response, timer;
+      try {
+        response = await Promise.race([saveTransport.send(job.request), new Promise(resolve => {
+          timer = setTimeout(() => resolve({ ok: false, code: "SAVE_UNCERTAIN", message: "Save is taking too long to confirm. Your draft is safe. Retry to check the same save." }), 15000);
+        })]);
+      }
+      catch (_) { response = { ok: false, code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Your draft is safe. Retry to check the same save." }; }
+      finally { clearTimeout(timer); }
+      if (response?.ok && (!Array.isArray(response.result?.records) || response.result.records.length !== job.request.targets.length
+        || response.result.records.some((record, index) => !record || record.value === undefined || record.table !== job.request.targets[index].table || record.id !== job.request.targets[index].id))) {
+        response = { ok: false, code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Your draft is safe. Retry to check the same save." };
+      }
+      job.sending = false;
+      if (!response?.ok) {
+        job.status = "error";
+        job.error = response || { code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Retry to check it safely." };
+        syncSaveUI();
+        if (job.listKey && listDialogNode.open && job.listKey === listManager.key) listDialogNode.querySelector('[data-save-notice]')?.scrollIntoView({ block: "nearest" });
+        else if (job.request.targets.some(target => target.table === "groups" && target.id === state.selectedRootId)) detailContentNode.querySelector('[data-save-notice]')?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      // A successful save clears its submitted draft only after acknowledgment, even if its sidebar was closed.
+      const restoreFocus = captureFocus();
+      releaseSaveLocks(); saveJob = null;
+      job.apply(response.result.records);
+      renderAllPreservingScroll(null, { keepSelection: true });
+      if (listDialogNode.open) renderListManager();
+      syncSaveUI();
+      restoreFocus();
+      if (job.listKey && listDialogNode.open && job.listKey === listManager.key) {
+        (document.getElementById("miniV2ListName") || listDialogNode.querySelector('[data-list-action="add"]'))?.focus({ preventScroll: true });
+      }
+    }
+
+    function applyMiniSave(records, entries, kind = "save", restoreRecord = null) {
+      const scroll = captureScrollState();
+      records.forEach(record => {
+        const entry = entries.find(item => item.group.rootId === record.id);
+        const selected = state.selectedRootId === record.id;
+        if (kind === "delete" && !record.value) state.deletedGroups.push({ group: entry.group, editor: entry.editor,
+          selectedCopyId: entry.selectedCopyId, draftLocations: entry.locations });
+        state.groups = state.groups.filter(group => group.rootId !== record.id);
+        if (record.value) state.groups.push(savedRecordGroup(record.value));
+        entry.group.copies.forEach(copy => { delete state.draftLocations[copy.id]; });
+        delete state.editorDrafts[record.id]; delete state.newGroups[record.id];
+        if (state.editor?.rootId === record.id) {
+          state.editor = null;
+          if (entry.editor?.readScroll) Object.assign(scroll, { detailTop: entry.editor.readScroll.detailTop, detailTableLeft: entry.editor.readScroll.detailTableLeft });
+        }
+        if (kind !== "discard" && entry.editor && record.value) rememberNextStickerStart(entry.editor);
+        if (selected && !record.value) { state.selectedRootId = ""; state.selectedCopyId = ""; }
+        if (selected && record.value && !record.value.copies[state.selectedCopyId]) {
+          state.selectedCopyId = state.browseMode === "individuals" ? Object.keys(record.value.copies)[0] || "" : "";
+        }
+      });
+      state.groups.sort((a, b) => a.originalOrder - b.originalOrder);
+      if (restoreRecord && records[0].value) {
+        state.deletedGroups = state.deletedGroups.filter(record => record !== restoreRecord);
+        Object.assign(state.draftLocations, restoreRecord.draftLocations);
+        if (restoreRecord.editor) state.editorDrafts[restoreRecord.group.rootId] = restoreRecord.editor;
+      }
+      state.pendingSaved = kind !== "discard";
+      state.browseScroll = { groups: null, individuals: null };
+      renderAllPreservingScroll(scroll, { keepSelection: true });
+    }
+
+    function releaseSaveLocks() {
+      if (!root) return;
+      root.querySelectorAll('[data-save-disabled]').forEach(node => {
+        node.disabled = node.dataset.saveDisabled === "true"; delete node.dataset.saveDisabled;
+      });
+      root.querySelectorAll('[data-save-label]').forEach(node => {
+        node.innerHTML = node.dataset.saveLabel; delete node.dataset.saveLabel;
+      });
+    }
+
+    function saveMessageMarkup(place) {
+      if (!saveJob) return "";
+      const job = saveJob, error = job.error, pending = job.status === "saving";
+      let markup = `<p role="status">${pending ? "Saving..." : escapeHtml(error.message)}</p>`;
+      if (pending) return markup;
+      if (error.code === "STALE") {
+        const changed = staleSaveTargets(job);
+        const bulk = job.request.targets.length > 1;
+        const deleting = job.action === "confirm-delete-group";
+        const prompt = deleting ? "Delete this group anyway?" : bulk ? "Save all your changes anyway?" : "Save your changes anyway?";
+        const names = changed.map(({ target }) => target.before?.name || target.before?.value || target.value?.name || "New entry");
+        return `<p role="status">${changed.length === 1 ? "This entry changed" : `${changed.length} entries changed`} since you opened ${changed.length === 1 ? "it" : "them"}.<br>${prompt}</p>
+          ${bulk ? `<p>Discard only affects: ${escapeHtml(names.join(", "))}.</p>` : ""}
+          <button type="button" class="button mini-v2-copy-btn mini-v2-primary" data-save-action="overwrite">${deleting ? "Delete Anyway" : "Save Anyway"}</button>
+          <button type="button" class="button mini-v2-copy-btn" data-save-action="discard">Discard My Changes</button>`;
+      } else if (place === "summary" && !["save-all-pending", "undo-delete-group"].includes(job.action)) {
+        markup += '<button type="button" class="button mini-v2-copy-btn mini-v2-primary" data-save-action="retry">Retry save</button>';
+      }
+      if (!["SAVE_UNCERTAIN", "REQUEST_REUSED"].includes(error.code)) markup += '<button type="button" class="button mini-v2-copy-btn" data-save-action="edit">Keep Editing</button>';
+      return markup;
+    }
+
+    function syncSaveUI() {
+      if (!root) return;
+      releaseSaveLocks();
+      root.dataset.saveState = saveJob?.status || "idle";
+      const job = saveJob;
+      const lock = node => { if (!node || Object.hasOwn(node.dataset, "saveDisabled")) return; node.dataset.saveDisabled = String(node.disabled); node.disabled = true; };
+      const label = (node, text) => { node.dataset.saveLabel = node.innerHTML; node.textContent = text; };
+      const affected = job?.request.targets.some(target => target.table === "groups" && target.id === state.selectedRootId);
+      if (job) {
+        root.querySelectorAll('[data-action="save-edit"], [data-action="save-changes"], [data-action="save-all-pending"], [data-action="confirm-delete-group"], [data-action="undo-delete-group"], [data-list-action="save"], [data-list-action="undo"]').forEach(lock);
+        if (affected) {
+          detailPanelNode.querySelectorAll('input, select, textarea, [data-action="discard-edit"], [data-action="reset-changes"], [data-action="set-all-home"], [data-action="edit-all-home"], [data-action="add-copy"], [data-action="remove-copy"], [data-action="undo-remove-copy"], [data-action="apply-next-sticker"], [data-action="delete-group"]').forEach(lock);
+        }
+        if (job.listKey === listManager.key) listDialogNode.querySelectorAll('#miniV2ListName, #miniV2ListHome, [data-list-action="cancel"]').forEach(lock);
+        const primary = job.listKey ? listDialogNode.querySelector(`[data-list-action="${job.action}"]`)
+          : job.action === "save-all-pending" || job.action === "undo-delete-group" ? root.querySelector(`[data-action="${job.action}"]`)
+            : affected && detailPanelNode.querySelector(`[data-action="${job.action}"]`);
+        if (primary && (!job.listKey || job.listKey === listManager.key)) {
+          // A stale save is resolved only through the explicit choices in its notice.
+          if (job.status === "saving" || job.error.code !== "STALE") {
+            label(primary, job.status === "saving" ? "Saving..." : "Retry");
+            primary.disabled = job.status === "saving";
+          }
+        }
+      }
+      const hosts = [[detailContentNode, "detail", affected], [document.getElementById("miniV2ChangesMenu"), "summary", !!job],
+        [document.getElementById("miniV2ListsForm"), "list", !!job?.listKey && job.listKey === listManager.key]];
+      hosts.forEach(([host, place, show]) => {
+        if (!host) return;
+        let node = host.querySelector(`:scope > [data-save-notice="${place}"]`);
+        if (!show) { node?.remove(); return; }
+        if (!node) { node = document.createElement("div"); node.dataset.saveNotice = place; node.className = "mini-v2-save-notice"; host.appendChild(node); }
+        const markup = saveMessageMarkup(place);
+        if (node.innerHTML !== markup) node.innerHTML = markup;
+      });
+    }
+
+    function handleSaveAction(action) {
+      if (!saveJob || saveJob.sending) return;
+      if (action === "retry") { if (saveJob.error.code !== "STALE") sendSave(); return; }
+      if (action === "edit") {
+        if (["SAVE_UNCERTAIN", "REQUEST_REUSED", "STALE"].includes(saveJob.error.code)) return;
+        releaseSaveLocks(); saveJob = null; renderAllPreservingScroll(null, { keepSelection: true });
+        if (listDialogNode.open) renderListManager();
+        return;
+      }
+      if (action === "discard" && saveJob.error?.code === "STALE") { discardStaleChanges(); return; }
+      if (action === "overwrite" && saveJob.error?.code === "STALE") {
+        const targets = saveJob.request.targets.map((target, index) => {
+          const latest = saveJob.error.latest[index].value;
+          return { ...target, before: latest, value: MiniSaveFlow.overwriteEdits(target.before, target.value, latest) };
+        });
+        saveJob.request = MiniSaveFlow.clone({ requestId: newMockId("request"), targets });
+        sendSave();
+      }
+    }
+
+    function staleSaveTargets(job) {
+      return job.request.targets.flatMap((target, index) => MiniSaveFlow.equal(target.before, job.error.latest[index].value)
+        ? [] : [{ target, latest: job.error.latest[index] }]);
+    }
+
+    function discardStaleChanges() {
+      const changed = staleSaveTargets(saveJob);
+      releaseSaveLocks(); saveJob = null;
+      const groups = changed.filter(({ target }) => target.table === "groups");
+      if (groups.length) {
+        const entries = groups.map(({ target }) => ({
+          group: state.groups.find(group => group.rootId === target.id) || state.newGroups[target.id] || savedRecordGroup(target.before || target.value),
+          editor: state.editor?.rootId === target.id ? state.editor : state.editorDrafts[target.id]
+        }));
+        // Explicit discard adopts saved records without recording a save, deletion, or sticker allocation.
+        applyMiniSave(groups.map(({ latest }) => latest), entries, "discard");
+      }
+      changed.filter(({ target }) => target.table.startsWith("lists:")).forEach(({ target, latest }) => {
+        const key = target.table.slice(6), value = latest.value;
+        const previous = listManager.catalogs[key].find(choice => choice.id === target.id);
+        if (previous && value && previous.value !== value.value) renameListReferences(key, previous.value, value.value);
+        listManager.catalogs[key] = value
+          ? previous ? listManager.catalogs[key].map(choice => choice.id === target.id ? value : choice) : listManager.catalogs[key].concat(value)
+          : listManager.catalogs[key].filter(choice => choice.id !== target.id);
+        delete listManager.forms[key];
+        listManager.notice = "";
+        syncListChoices();
+      });
+      renderAllPreservingScroll(null, { keepSelection: true });
+      if (listDialogNode.open) renderListManager();
+      syncSaveUI();
+    }
+
+    function handleSaveInput(node) {
+      if (node.matches('[data-save-outcome]')) {
+        nextSaveOutcome = node.value; return true;
+      }
+      return false;
+    }
+
+    function pendingEntries() {
+      return state.groups.concat(Object.values(state.newGroups)).flatMap(group => {
+        const editor = (state.editor?.rootId === group.rootId ? state.editor : state.editorDrafts[group.rootId]) || null;
+        return editorHasChanges(editor) || group.copies.some(isDirty) ? [{ group, editor }] : [];
+      });
+    }
+
+    function editedGroup(group, editor) {
+      const paintChanged = editor.fields.paint !== JSON.parse(editor.initial).fields.paint;
+      const fields = { ...editor.fields, name: editor.fields.name.trim(),
+        setNumber: hasNamedSet(editor.fields) ? editor.fields.setNumber.trim() : "",
+        paint: paintChanged ? editor.fields.paint || null : group.paint ?? null };
+      return enrichGroup({ ...group, ...fields, copies: retainedEditorCopies(group, editor).map(copy => {
+        const { followsHome, ...value } = editorCopy(copy, editor, group);
+        return { ...value, sticker: (value.sticker || "").trim() };
+      }) });
+    }
+
+    function pendingGroup(entry) {
+      return entry.editor ? editedGroup(entry.group, entry.editor)
+        : enrichGroup({ ...entry.group, copies: entry.group.copies.map(copy => ({ ...copy, currentLocation: getEffectiveLocation(copy) })) });
+    }
+
+    function preparePendingBatch() {
+      const entries = pendingEntries();
+      const candidates = new Map(entries.map(entry => [entry.group.rootId, pendingGroup(entry)]));
+      const issues = new Map();
+      entries.forEach(({ group, editor }) => {
+        const error = editor && getEditorValidationError(editor, group, { skipStickerCheck: true });
+        if (error) issues.set(group.rootId, { rootId: group.rootId, ...error });
+        candidates.get(group.rootId).copies.forEach(copy => {
+          const original = group.copies.find(item => item.id === copy.id);
+          if ((!original || original.currentLocation !== copy.currentLocation) && !state.locations.includes(copy.currentLocation)) {
+            if (!issues.has(group.rootId)) issues.set(group.rootId, { rootId: group.rootId,
+              message: "Choose a current location for each copy before saving.", selector: `select[data-copy-id="${copy.id}"]` });
+          }
+        });
+      });
+      const groups = state.groups.map(group => candidates.get(group.rootId) || group)
+        .concat(entries.filter(entry => entry.editor?.isNew).map(entry => candidates.get(entry.group.rootId)));
+      // Validate the final collection, not a sequence of partial saves. This also
+      // permits deliberate sticker swaps between groups in the same batch.
+      const stickers = new Map();
+      groups.forEach(group => group.copies.forEach(copy => {
+        const sticker = String(copy.sticker || "").trim().toUpperCase();
+        if (!sticker || sticker === "N/A") return;
+        const other = stickers.get(sticker);
+        if (other) {
+          [{ group, copy }, other].forEach(item => {
+            if (candidates.has(item.group.rootId) && !issues.has(item.group.rootId)) {
+              issues.set(item.group.rootId, { rootId: item.group.rootId,
+                message: `Sticker ${sticker} is assigned more than once. Change one assignment before saving.`,
+                selector: `[data-edit-copy-sticker="${item.copy.id}"]` });
+            }
+          });
+        } else stickers.set(sticker, { group, copy });
+      }));
+      return { entries, groups, issues: Array.from(issues.values()) };
+    }
+
+    function refreshPendingBrowse() {
+      const scroll = captureScrollState();
+      const rows = getBrowseRows();
+      renderListHeader(rows.length);
+      renderTable(rows);
+      restoreScrollState(scroll);
+    }
+
+    function reviewPendingIssue() {
+      const issues = preparePendingBatch().issues;
+      if (!issues.length) return;
+      const issue = issues[(issues.findIndex(item => item.rootId === state.selectedRootId) + 1) % issues.length];
+      openPendingReview();
+      leaveEditor();
+      state.selectedRootId = issue.rootId;
+      state.selectedCopyId = "";
+      renderAllPreservingScroll(null, { keepSelection: true });
+      if (!state.editor) beginEditor();
+      showEditorError(issue.message, detailPanelNode.querySelector(issue.selector));
+      revealDetailOnSmallScreen();
+    }
+
+    function saveAllPending() {
+      if (saveJob) return;
+      const batch = preparePendingBatch();
+      if (batch.issues.length) { reviewPendingIssue(); return; }
+      if (!batch.entries.length) return;
+      startSave(batch.entries.map(entry => groupSaveTarget(entry.group, batch.groups.find(group => group.rootId === entry.group.rootId))), {
+        action: "save-all-pending", apply: records => applyMiniSave(records, batch.entries)
+      });
+    }
+
     function renderSummaryLane() {
       const copies = state.groups.flatMap(group => group.copies);
       const missing = copies.filter(copy => getStickerStatus(copy.sticker) === "Missing").length;
       const away = copies.filter(copy => copy.currentLocation !== copy.home).length;
       const dirtyCount = copies.filter(isDirty).length;
       const draftCount = editorDraftIds().length;
-      const hasWork = dirtyCount || draftCount || state.deletedGroups.length;
+      const hasWork = dirtyCount || draftCount || state.deletedGroups.length || saveJob;
+      const pending = preparePendingBatch();
+      const reviewing = state.collectionView === "pending";
+      const shownGroups = reviewing ? new Set(getBrowseRows().map(row => row.group.rootId)).size : null;
       const expanded = panel => String(state.summaryPanel === panel);
       const dashboard = `<button type="button" class="mini-v2-dashboard" disabled aria-label="Dashboard, coming soon">
         Dashboard <span>Soon</span></button>`;
@@ -846,8 +1202,8 @@
         <div class="mini-v2-summary-desktop mini-v2-summary-shortcuts">${shortcuts}</div>
         <div class="mini-v2-summary-compact">
           <button type="button" class="mini-v2-summary-control ${state.collectionView ? "has-work" : ""}" data-action="toggle-summary" data-summary-panel="collection"
-            aria-label="Collection shortcuts${state.collectionView ? `, viewing ${state.collectionView === "away" ? "away from home" : "missing stickers"}` : ""}"
-            aria-expanded="${expanded("collection")}" aria-controls="miniV2CollectionMenu">${state.collectionView === "away" ? "Away" : state.collectionView === "missing" ? "Stickers" : "Collection"}<span class="mini-v2-summary-caret" aria-hidden="true"></span></button>
+            aria-label="Collection shortcuts${state.collectionView ? `, viewing ${state.collectionView === "pending" ? "pending changes" : state.collectionView === "away" ? "away from home" : "missing stickers"}` : ""}"
+            aria-expanded="${expanded("collection")}" aria-controls="miniV2CollectionMenu">${state.collectionView === "pending" ? "Pending" : state.collectionView === "away" ? "Away" : state.collectionView === "missing" ? "Stickers" : "Collection"}<span class="mini-v2-summary-caret" aria-hidden="true"></span></button>
           <div id="miniV2CollectionMenu" class="mini-v2-summary-popover" ${state.summaryPanel === "collection" ? "" : "hidden"}>
             <p class="mini-v2-summary-heading">Whole collection</p>
             <p class="mini-v2-summary-empty">${copies.length} miniatures / ${state.groups.length} ${state.groups.length === 1 ? "group" : "groups"}</p>${shortcuts}
@@ -860,19 +1216,26 @@
             aria-label="Review changes${hasWork ? ", unfinished work or undo available" : ", no pending edits"}">
             <span class="mini-v2-work-indicator" aria-hidden="true"></span><span class="mini-v2-summary-wide">Review </span>Changes<span class="mini-v2-summary-caret" aria-hidden="true"></span>
           </button>
-          <div id="miniV2ChangesMenu" class="mini-v2-summary-popover" ${state.summaryPanel === "changes" ? "" : "hidden"}>
+          <div id="miniV2ChangesMenu" class="mini-v2-summary-popover mini-v2-changes-menu" ${state.summaryPanel === "changes" ? "" : "hidden"}>
             <p class="mini-v2-summary-heading">Review changes</p>
-            ${dirtyCount ? `<button type="button" data-action="review-changes">Pending locations <span>${dirtyCount} ${dirtyCount === 1 ? "copy" : "copies"}</span></button>` : ""}
-            ${draftCount ? `<button type="button" data-action="review-editor-drafts">Resume drafts <span>${draftCount} ${draftCount === 1 ? "group" : "groups"}</span></button>` : ""}
+            <p class="mini-v2-pending-scope">${pending.entries.length ? `${pending.entries.length} ${pending.entries.length === 1 ? "group" : "groups"} ${reviewing ? `total / ${shownGroups} shown` : "with unsaved changes"}` : "No pending edits."}</p>
+            <button type="button" class="mini-v2-review-pending" data-action="review-pending"${!pending.entries.length && !reviewing ? " disabled" : ""}>${reviewing ? "Show all pending" : "Show pending changes"}<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10h12m-6-6 6 6-6 6"/></svg></button>
+            ${reviewing ? '<button type="button" data-action="leave-pending">Back to previous view</button>' : ""}
+            ${pending.issues.length ? `<button type="button" class="mini-v2-pending-issues" data-action="review-pending-issue">${pending.issues.length} ${pending.issues.length === 1 ? "group needs" : "groups need"} attention <span>Review</span></button>` : ""}
+            <button type="button" class="mini-v2-save-all" data-action="save-all-pending" title="Apply all pending miniature changes in this page, including groups hidden by filters. Preview only; no spreadsheet changes."${!pending.entries.length || pending.issues.length ? " disabled" : ""}>Save All Changes <span>${pending.entries.length} ${pending.entries.length === 1 ? "group" : "groups"}</span></button>
+            ${dirtyCount && !reviewing ? `<button type="button" data-action="review-changes">Pending locations <span>${dirtyCount} ${dirtyCount === 1 ? "copy" : "copies"}</span></button>` : ""}
+            ${draftCount && !reviewing ? `<button type="button" data-action="review-editor-drafts">Resume drafts <span>${draftCount} ${draftCount === 1 ? "group" : "groups"}</span></button>` : ""}
             ${state.deletedGroups.length ? `<button type="button" data-action="undo-delete-group">Undo deletion <span>${escapeHtml(state.deletedGroups.at(-1).group.name)}</span></button>` : ""}
             ${state.deletedGroups.at(-1)?.restoreError ? `<p class="mini-v2-summary-empty" role="status">${escapeHtml(state.deletedGroups.at(-1).restoreError)}</p>` : ""}
-            ${hasWork ? "" : '<p class="mini-v2-summary-empty">No pending edits.</p>'}
-            <p class="mini-v2-summary-footnote">${previewMode ? "Preview" : "Demo"} only. Applied changes and drafts reset on reload.</p>
           </div>
         </div>
         <div id="miniV2DemoNotice" class="mini-v2-summary-popover mini-v2-demo-popover" ${state.summaryPanel === "demo" ? "" : "hidden"}>
           <p class="mini-v2-summary-heading">${previewMode ? "Real collection, temporary changes" : "Mock data only"}</p>
           <p>${previewMode ? "This preview reads the imported snapshot in 2.0. Save, Create, Delete, and location changes only affect this browser session. Reload restores the imported collection; neither spreadsheet is changed by the app. The old tracker is not synchronized." : "Save applies changes in this browser until reload. Your Google Sheet is not read or changed."}</p>
+          <details class="mini-v2-save-trials"><summary>Try save feedback</summary><label>Next save
+            <select data-save-outcome aria-label="Next simulated save">
+              ${[["success", "Normal"], ["failure", "Connection problem"], ["lost", "Lost confirmation"], ["conflict", "Changed in another tab"]].map(([value, text]) => `<option value="${value}"${nextSaveOutcome === value ? " selected" : ""}>${text}</option>`).join("")}
+            </select></label><p>One simulated result, then back to normal. Nothing writes to your sheet.</p></details>
         </div>
       `;
       // Editor blur/change can follow pointerdown on the banner; keep unchanged buttons alive.
@@ -881,6 +1244,7 @@
         summaryMarkup = markup;
       }
       root.querySelector('[data-summary-panel="demo"]').setAttribute("aria-expanded", expanded("demo"));
+      syncSaveUI();
     }
 
     function toggleSummaryPanel(panel) {
@@ -903,6 +1267,7 @@
 
     function openCollectionView(view) {
       if (!["away", "missing"].includes(view)) return;
+      if (state.collectionView === "pending") restorePendingBrowse();
       if (state.collectionView === view) { restorePreviousBrowse(); return; }
       // Keep the original browse context even when moving between collection shortcuts.
       if (!state.previousBrowse) state.previousBrowse = {
@@ -935,6 +1300,7 @@
     }
 
     function restorePreviousBrowse() {
+      if (state.collectionView === "pending") { restorePendingBrowse(); return; }
       const previous = state.previousBrowse;
       if (!previous) return;
       leaveEditor();
@@ -942,9 +1308,58 @@
       const { scroll, ...browse } = previous;
       Object.assign(state, browse, { previousBrowse: null, collectionView: "", summaryPanel: "",
         openFacetKey: "", locationMenuOpen: false, locationMenuSearch: "" });
-      if (!getSelectedGroup()) { state.selectedRootId = ""; state.selectedCopyId = ""; }
+      reconcileBrowseSelection();
       renderAllPreservingScroll(scroll, { keepSelection: true });
       searchInputNode.focus({ preventScroll: true });
+    }
+
+    function openPendingReview() {
+      if (state.collectionView !== "pending") {
+        state.pendingReturn = {
+          browseMode: state.browseMode, search: state.search, locationFilter: state.locationFilter,
+          filtersApplied: JSON.parse(JSON.stringify(state.filtersApplied)), sort: { ...state.sort },
+          collectionView: state.collectionView, previousBrowse: state.previousBrowse,
+          selectedRootId: state.selectedRootId, selectedCopyId: state.selectedCopyId,
+          browseScroll: { ...state.browseScroll }, scroll: captureScrollState()
+        };
+        state.pendingSaved = false;
+      }
+      leaveEditor();
+      state.collectionView = "pending";
+      state.browseMode = "groups";
+      state.search = "";
+      state.locationFilter = "all";
+      state.filtersApplied = createEmptyFilterState();
+      state.sort = { key: "", direction: "" };
+      state.openFacetKey = "";
+      state.locationMenuOpen = false;
+      state.locationMenuSearch = "";
+      state.summaryPanel = "";
+      clearTimeout(copyRevealTimer);
+      const scroll = captureScrollState();
+      scroll.tableTop = 0; scroll.tableLeft = 0;
+      renderAllPreservingScroll(scroll, { keepSelection: true });
+      searchInputNode.focus({ preventScroll: true });
+    }
+
+    function restorePendingBrowse() {
+      const previous = state.pendingReturn;
+      if (!previous) return;
+      leaveEditor();
+      clearTimeout(copyRevealTimer);
+      const { scroll, ...browse } = previous;
+      Object.assign(state, browse, { pendingReturn: null, summaryPanel: "", openFacetKey: "",
+        locationMenuOpen: false, locationMenuSearch: "" });
+      reconcileBrowseSelection();
+      renderAllPreservingScroll(scroll, { keepSelection: true });
+      searchInputNode.focus({ preventScroll: true });
+    }
+
+    function reconcileBrowseSelection() {
+      const group = getSelectedGroup();
+      if (!group) { state.selectedRootId = ""; state.selectedCopyId = ""; return; }
+      const editor = (state.editor?.rootId === group.rootId ? state.editor : state.editorDrafts[group.rootId]) || null;
+      if (!retainedEditorCopies(group, editor).some(copy => copy.id === state.selectedCopyId)) state.selectedCopyId = "";
     }
 
     function getBrowseUnit(count) {
@@ -953,9 +1368,13 @@
     }
 
     function renderListHeader(visibleCount) {
+      listStageNode.classList.toggle("is-pending-review", state.collectionView === "pending");
+      document.getElementById("miniV2BrowseBack").hidden = state.collectionView !== "pending";
+      document.getElementById("miniV2BrowseTitle").innerHTML = state.collectionView === "pending"
+        ? 'Pending<span class="mini-v2-browse-title-tail"> Changes</span>' : 'Browse<span class="mini-v2-browse-title-tail"> Minis</span>';
       listHeaderNoteNode.textContent = `${visibleCount} ${getBrowseUnit(visibleCount)} shown`;
       const countNode = document.getElementById("miniV2BrowseCount");
-      const scope = state.collectionView === "away" ? "Away from home" : state.collectionView === "missing" ? "Missing stickers" : "";
+      const scope = state.collectionView === "pending" ? "Pending changes" : state.collectionView === "away" ? "Away from home" : state.collectionView === "missing" ? "Missing stickers" : "";
       countNode.textContent = scope ? `${scope}: ${visibleCount}` : `${visibleCount} ${getBrowseUnit(visibleCount)}`;
       countNode.title = scope ? `${visibleCount} ${getBrowseUnit(visibleCount)} shown: ${scope.toLowerCase()}` : listHeaderNoteNode.textContent;
       const clear = root.querySelector('[data-action="clear-filters"]');
@@ -974,7 +1393,7 @@
       locationLabelNode.textContent = state.locationFilter === "all" ? "All locations" : state.locationFilter;
       const locationMeaning = state.browseMode === "individuals" ? "Current location" : "Home or current location";
       locationTriggerNode.setAttribute("aria-label", `${locationMeaning}: ${locationLabelNode.textContent}`);
-      locationTriggerNode.title = `Filter by ${locationMeaning.toLowerCase()} (last saved locations)`;
+      locationTriggerNode.title = `Filter by ${locationMeaning.toLowerCase()} (${state.collectionView === "pending" ? "draft locations" : "last saved locations"})`;
       locationTriggerNode.setAttribute("aria-expanded", state.locationMenuOpen ? "true" : "false");
       locationTriggerNode.classList.toggle("is-active", state.locationFilter !== "all");
       locationTriggerNode.classList.toggle("is-open", state.locationMenuOpen);
@@ -1296,9 +1715,13 @@
       const individuals = state.browseMode === "individuals";
 
       if (!browseRows.length) {
+        const pending = state.collectionView === "pending";
+        const hasPending = pending && pendingEntries().length > 0;
         tableScrollNode.innerHTML = `
           <div class="mini-v2-list-wrap">
-            <div class="mini-v2-empty">No ${getBrowseUnit(0)} match those filters.</div>
+            <div class="mini-v2-empty">${pending ? hasPending ? 'No pending changes match these filters.<br><button type="button" class="button mini-v2-copy-btn" data-action="review-pending">Show all pending</button>'
+              : state.pendingSaved ? "All changes saved. Use Back to return to browsing." : "No pending changes. Use Back to return to browsing."
+              : `No ${getBrowseUnit(0)} match those filters.`}</div>
           </div>
         `;
         return;
@@ -1307,16 +1730,18 @@
       const rows = browseRows.map(({ group, copy }) => {
         const status = getStatusKey(group);
         const selected = group.rootId === state.selectedRootId && (!copy || copy.id === state.selectedCopyId);
-        const dirty = copy && isDirty(copy);
+        const dirty = copy && (isDirty(copy) || state.collectionView === "pending");
+        const isNew = state.collectionView === "pending" && !!state.newGroups[group.rootId];
+        const displayName = group.name || (isNew ? "Untitled miniature" : "Unnamed miniature");
         const copyLabel = copy ? `${copy.sticker || `No sticker, copy ${copy.miniNumber}`}, ${group.name}` : "";
         return `
-          <tr class="mini-v2-row ${selected ? "is-selected" : ""} ${dirty ? "has-pending-copy" : ""}" data-group-id="${escapeHtml(group.rootId)}"${copy ? ` data-copy-id="${escapeHtml(copy.id)}" aria-label="${escapeHtml(copyLabel)}${dirty ? ", unsaved location change" : ""}"` : ""}${selected ? ' aria-current="true"' : ""} tabindex="0">
+          <tr class="mini-v2-row ${selected ? "is-selected" : ""} ${dirty ? "has-pending-copy" : ""}" data-group-id="${escapeHtml(group.rootId)}"${copy ? ` data-copy-id="${escapeHtml(copy.id)}" aria-label="${escapeHtml(copyLabel)}${dirty ? state.collectionView === "pending" ? ", unsaved changes" : ", unsaved location change" : ""}"` : ""}${selected ? ' aria-current="true"' : ""} tabindex="0">
             <td class="mini-v2-cell mini-v2-cell-avail${!copy && group.total >= 100 ? " has-wide-count" : ""}">
-              ${copy
-                ? `<span class="mini-v2-individual-id" title="${escapeHtml(copyLabel)}${dirty ? "; unsaved location change" : ""}">${escapeHtml(copy.sticker || "No ID")}</span>`
+              ${individuals
+                ? `<span class="mini-v2-individual-id" title="${escapeHtml(copyLabel || "This draft needs a copy")}${dirty ? "; unsaved changes" : ""}">${escapeHtml(copy ? copy.sticker || "No ID" : "No copies")}</span>`
                 : `<span class="mini-v2-count mini-v2-count--browse ${statusClass(status)}" title="${group.available} of ${group.total} available">${group.available}/${group.total}</span>`}
             </td>
-            <td class="mini-v2-cell mini-v2-cell-name"><div class="mini-v2-name" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</div></td>
+            <td class="mini-v2-cell mini-v2-cell-name"><div class="mini-v2-name${isNew ? " mini-v2-new-draft-name" : ""}" title="${escapeHtml(displayName)}${state.collectionView === "pending" ? "; unsaved draft preview" : ""}">${isNew ? '<span class="mini-v2-new-draft-label">New</span>' : ""}${escapeHtml(displayName)}</div></td>
             ${copy ? `<td class="mini-v2-cell mini-v2-cell-home">${renderBrowseCopyLocation(copy)}</td>` : renderBrowseFieldCell("home", group.home)}
             ${renderBrowseFieldCell("size", group.size)}
             ${renderBrowseFieldCell("type", group.creatureType)}
@@ -1438,7 +1863,7 @@
 
       detailContentNode.innerHTML = `
         <div class="mini-v2-detail-panel">
-          ${getBrowseRows().some(row => row.group.rootId === group.rootId) ? "" : '<p class="mini-v2-editor-scope" role="status">This group is outside your current browse filters.</p>'}
+          ${getBrowseRows().some(row => row.group.rootId === group.rootId) ? "" : `<p class="mini-v2-editor-scope" role="status">${state.collectionView === "pending" && !pendingEntries().some(entry => entry.group.rootId === group.rootId) ? "This group has no pending changes." : "This group is outside your current browse filters."}</p>`}
           <section class="mini-v2-detail-group">
             <div class="mini-v2-detail-group-title">Details</div>
             <div class="mini-v2-detail-grid">
@@ -1486,8 +1911,8 @@
         addedCopies: editor.addedCopies, removedCopyIds: editor.removedCopyIds }) : "";
     }
 
-    function editorHasChanges() {
-      return !!state.editor && (state.editor.isNew || editorSnapshot() !== state.editor.initial);
+    function editorHasChanges(editor = state.editor) {
+      return !!editor && (editor.isNew || editorSnapshot(editor) !== editor.initial);
     }
 
     function editorDraftIds() {
@@ -1530,6 +1955,7 @@
     }
 
     function beginNewGroup() {
+      state.pendingSaved = false;
       const existingId = Object.keys(state.newGroups)[0];
       if (state.editor?.isNew) {
         document.getElementById("miniV2EditName").focus({ preventScroll: true });
@@ -1558,12 +1984,12 @@
       revealDetailOnSmallScreen();
     }
 
-    function editorBaseCopies(group = getSelectedGroup()) {
-      return state.editor ? group.copies.concat(state.editor.addedCopies) : group.copies;
+    function editorBaseCopies(group = getSelectedGroup(), editor = state.editor) {
+      return editor ? group.copies.concat(editor.addedCopies) : group.copies;
     }
 
-    function retainedEditorCopies(group = getSelectedGroup()) {
-      return editorBaseCopies(group).filter(copy => !state.editor?.removedCopyIds.includes(copy.id));
+    function retainedEditorCopies(group = getSelectedGroup(), editor = state.editor) {
+      return editorBaseCopies(group, editor).filter(copy => !editor?.removedCopyIds.includes(copy.id));
     }
 
     function sequentialStickerIndex(value) {
@@ -1706,6 +2132,7 @@
 
     function addEditorCopy(focus = true) {
       if (!state.editor) return;
+      state.pendingSaved = false;
       const group = getSelectedGroup();
       const number = Math.max(0, ...editorBaseCopies(group).map(copy => copy.miniNumber || 0)) + 1;
       const copy = { id: newMockId("mock-copy"), miniNumber: number, sticker: "", note: "",
@@ -1722,6 +2149,7 @@
 
     function removeEditorCopy(copyId) {
       if (!state.editor) return;
+      state.pendingSaved = false;
       const copy = editorBaseCopies().find(item => item.id === copyId);
       if (!copy) return;
       if (!state.editor.addedCopies.includes(copy) && retainedEditorCopies().length <= 1) {
@@ -1761,6 +2189,7 @@
       const scroll = state.editor?.readScroll;
       if (!state.editor) return;
       const editor = state.editor;
+      state.pendingSaved = false;
       delete state.editorDrafts[state.editor.rootId];
       state.editor = null;
       if (editor.isNew) {
@@ -1855,16 +2284,17 @@
       </div>`;
     }
 
-    function editorCopy(copy) {
-      const draft = state.editor.copies[copy.id];
-      const group = getSelectedGroup();
-      const usesDraftHome = state.editor.addedCopies.includes(copy) || state.editor.fields.home !== group.home;
-      return { ...copy, ...draft, home: usesDraftHome ? state.editor.fields.home : copy.home };
+    function editorCopy(copy, editor = state.editor, group = getSelectedGroup()) {
+      const draft = editor.copies[copy.id];
+      const usesDraftHome = editor.addedCopies.includes(copy) || editor.fields.home !== group.home;
+      return { ...copy, ...draft, home: usesDraftHome ? editor.fields.home : copy.home };
     }
 
     function syncEditorFeedback() {
+      releaseSaveLocks();
       if (!state.editor) return;
       const changed = editorHasChanges();
+      if (changed) state.pendingSaved = false;
       detailContentNode.querySelector('[data-edit-field="set"]').title = hasMeaningfulValue(state.editor.fields.set)
         ? state.editor.fields.set : "Set not entered";
       const setNumber = detailContentNode.querySelector('[data-edit-field="setNumber"]');
@@ -1879,6 +2309,7 @@
         save.title = validationError ? validationError.message : "Apply the shown group and copies in this browser until reload; no spreadsheet changes";
       }
       renderSummaryLane();
+      if (state.collectionView === "pending") refreshPendingBrowse();
       const group = getSelectedGroup();
       const copies = retainedEditorCopies(group);
       detailContentNode.querySelector('[data-copy-scope]').textContent = `Shared by all ${copies.length} ${copies.length === 1 ? "copy" : "copies"}`;
@@ -1910,6 +2341,7 @@
         badge.textContent = state.editor.addedCopies.includes(copy) ? "New" : dirty ? "Unsaved" : away ? "Away" : "Home";
       });
       syncNextStickerAction();
+      syncSaveUI();
     }
 
     function clearEditorError() {
@@ -1935,6 +2367,7 @@
 
     function updateEditorInput(target) {
       if (!state.editor) return false;
+      state.pendingSaved = false;
       const field = target.dataset.editField;
       const copyId = target.dataset.editCopyNote;
       const stickerCopyId = target.dataset.editCopySticker;
@@ -1962,8 +2395,7 @@
       return true;
     }
 
-    function getEditorValidationError() {
-      const editor = state.editor;
+    function getEditorValidationError(editor = state.editor, group = getSelectedGroup(), options = {}) {
       const paintChoices = activeListValues("paint");
       const paintMessage = `Choose Paint: ${paintChoices.length > 1 ? `${paintChoices.slice(0, -1).join(", ")}, or ${paintChoices.at(-1)}` : paintChoices[0] || "a listed status"}.`;
       if (!editor.fields.name.trim()) {
@@ -1988,7 +2420,7 @@
           return { message: "Enter Set # for the selected set before creating this group.", selector: "#miniV2EditSetNumber" };
         }
       }
-      const copies = retainedEditorCopies();
+      const copies = retainedEditorCopies(group, editor);
       if (!copies.length) {
         return { message: "Add at least one copy before saving.", selector: '[data-action="add-copy"]' };
       }
@@ -1996,21 +2428,20 @@
       if (hasNamedSet(editor.fields) && setNumber !== initial.fields.setNumber && !/^(?:\d[a-z\d]{0,2})?$/i.test(setNumber)) {
         return { message: "Use up to three characters for Set #, starting with a digit (for example, 40 or 4a).", selector: "#miniV2EditSetNumber" };
       }
-      const group = getSelectedGroup();
-      const assignedStickers = reservedStickerIds(group.rootId);
+      const assignedStickers = options.skipStickerCheck ? new Set() : reservedStickerIds(group.rootId);
       const stickerKey = value => String(value || "").trim().toUpperCase();
       const stickerChanged = copy => editor.addedCopies.includes(copy)
-        || stickerKey(editorCopy(copy).sticker) !== stickerKey(copy.sticker);
+        || stickerKey(editorCopy(copy, editor, group).sticker) !== stickerKey(copy.sticker);
       copies.filter(copy => !stickerChanged(copy)).forEach(copy => assignedStickers.add(stickerKey(copy.sticker)));
       for (const copy of copies) {
-        if (editor.addedCopies.includes(copy) && !editorCopy(copy).currentLocation.trim()) {
+        if (editor.addedCopies.includes(copy) && !editorCopy(copy, editor, group).currentLocation.trim()) {
           return { message: "Choose a current location for each new copy before saving.",
             selector: `select[data-copy-id="${copy.id}"]` };
         }
-        const sticker = (editorCopy(copy).sticker || "").trim().toUpperCase();
-        if (!sticker || sticker === "N/A" || !stickerChanged(copy)) continue;
+        const sticker = (editorCopy(copy, editor, group).sticker || "").trim().toUpperCase();
+        if (options.skipStickerCheck || !sticker || sticker === "N/A" || !stickerChanged(copy)) continue;
         if (assignedStickers.has(sticker)) {
-          return { message: `Sticker ${editorCopy(copy).sticker.trim()} is already assigned. Use a different sticker or leave it blank.`,
+          return { message: `Sticker ${editorCopy(copy, editor, group).sticker.trim()} is already assigned. Use a different sticker or leave it blank.`,
             selector: `[data-edit-copy-sticker="${copy.id}"]` };
         }
         assignedStickers.add(sticker);
@@ -2019,6 +2450,7 @@
     }
 
     function saveEditor() {
+      if (saveJob) return;
       const editor = state.editor;
       if (!editor) return;
       clearEditorError();
@@ -2032,50 +2464,20 @@
         return;
       }
       const group = getSelectedGroup();
-      const copies = retainedEditorCopies(group);
-      const setNumber = editor.fields.setNumber.trim();
-      // Unrelated edits must not reinterpret legacy paint values.
-      const paintChanged = editor.fields.paint !== JSON.parse(editor.initial).fields.paint;
-      const fields = { ...editor.fields, name: editor.fields.name.trim(), setNumber: hasNamedSet(editor.fields) ? setNumber : "",
-        paint: paintChanged ? editor.fields.paint || null : group.paint ?? null };
-      const updated = enrichGroup({ ...group, ...fields, copies: copies.map(copy => {
-        const { followsHome, ...value } = editorCopy(copy);
-        return { ...value, sticker: (value.sticker || "").trim() };
-      }) });
-      if (editor.isNew) state.groups.push(updated);
-      else state.groups = state.groups.map(item => item.rootId === group.rootId ? updated : item);
-      group.copies.forEach(copy => { delete state.draftLocations[copy.id]; });
-      delete state.editorDrafts[group.rootId];
-      delete state.newGroups[group.rootId];
-      state.editor = null;
-      rememberNextStickerStart(editor);
-      if (!updated.copies.some(copy => copy.id === state.selectedCopyId)) {
-        state.selectedCopyId = state.browseMode === "individuals" ? updated.copies[0].id : "";
-      }
-      state.browseScroll = { groups: null, individuals: null };
-      const scroll = captureScrollState();
-      scroll.detailTop = editor.readScroll.detailTop;
-      scroll.detailTableLeft = editor.readScroll.detailTableLeft;
-      renderAllPreservingScroll(scroll, { keepSelection: true });
-      root.querySelector('[data-action="edit-mini"]').focus({ preventScroll: true });
+      const updated = editedGroup(group, editor);
+      startSave([groupSaveTarget(group, updated)], { action: "save-edit", apply: records => applyMiniSave(records, [{ group, editor }]) });
     }
 
     function deleteSelectedGroup() {
       const group = getSelectedGroup();
-      if (!group || state.editor?.isNew) return;
-      state.deletedGroups.push({ group, editor: state.editor, selectedCopyId: state.selectedCopyId,
-        draftLocations: Object.fromEntries(group.copies.filter(isDirty).map(copy => [copy.id, state.draftLocations[copy.id]])) });
-      state.groups = state.groups.filter(item => item.rootId !== group.rootId);
-      group.copies.forEach(copy => { delete state.draftLocations[copy.id]; });
-      delete state.editorDrafts[group.rootId];
-      state.editor = null;
-      state.selectedRootId = "";
-      state.selectedCopyId = "";
-      renderAllPreservingScroll();
-      focusSummaryTrigger("changes");
+      if (!group || state.editor?.isNew || saveJob) return;
+      const entry = { group, editor: state.editor, selectedCopyId: state.selectedCopyId,
+        locations: Object.fromEntries(group.copies.filter(isDirty).map(copy => [copy.id, state.draftLocations[copy.id]])) };
+      startSave([groupSaveTarget(group, null)], { action: "confirm-delete-group", apply: records => applyMiniSave(records, [entry], "delete") });
     }
 
     function undoGroupDeletion() {
+      if (saveJob) return;
       const record = state.deletedGroups.at(-1);
       if (!record) return;
       // Deleted records release stickers. Only a restore must check for later reuse.
@@ -2091,17 +2493,13 @@
         root.querySelector('[data-action="undo-delete-group"]').focus({ preventScroll: true });
         return;
       }
-      leaveEditor();
-      state.deletedGroups.pop();
-      state.groups.push(record.group);
-      state.groups.sort((a, b) => a.originalOrder - b.originalOrder);
-      Object.assign(state.draftLocations, record.draftLocations);
-      state.editorDrafts[record.group.rootId] = record.editor;
-      state.selectedRootId = record.group.rootId;
-      state.selectedCopyId = record.selectedCopyId;
-      renderAllPreservingScroll(null, { keepSelection: true });
-      document.getElementById("miniV2EditName").focus({ preventScroll: true });
-      revealDetailOnSmallScreen();
+      startSave([groupSaveTarget(record.group, record.group)], { action: "undo-delete-group", apply: records => {
+        applyMiniSave(records, [{ group: record.group }], "restore", record);
+        if (records[0].value) {
+          leaveEditor(); state.selectedRootId = record.group.rootId; state.selectedCopyId = record.selectedCopyId;
+          renderAllPreservingScroll(null, { keepSelection: true }); revealDetailOnSmallScreen();
+        }
+      } });
     }
 
     function renderStatusBadge(group) {
@@ -2357,6 +2755,8 @@
     function handleRootClick(event) {
       if (listDialogNode.open) return;
       const clickTarget = event.target instanceof Element ? event.target : null;
+      const feedback = clickTarget?.closest('[data-save-action]');
+      if (feedback) { event.stopPropagation(); if (!feedback.disabled) handleSaveAction(feedback.dataset.saveAction); return; }
       const viewButton = clickTarget && clickTarget.closest("button[data-browse-mode]");
       if (viewButton && root.contains(viewButton)) {
         event.stopPropagation();
@@ -2370,6 +2770,10 @@
       if (actionButton && root.contains(actionButton)) {
         event.stopPropagation();
         const action = actionButton.getAttribute("data-action");
+        if (actionButton.disabled && (saveJob || action !== "save-edit")) return;
+        if (saveJob && ["save-edit", "save-changes", "save-all-pending", "confirm-delete-group", "undo-delete-group"].includes(action)) {
+          handleSaveAction("retry"); return;
+        }
 
         if (action === "toggle-detail-status") {
           // Focus can already have opened the tip before the first click/tap.
@@ -2380,6 +2784,10 @@
         if (action === "toggle-summary") { toggleSummaryPanel(actionButton.dataset.summaryPanel); return; }
         if (action === "open-lists") { openListManager(); return; }
         if (action === "collection-view") { openCollectionView(actionButton.dataset.collectionView); return; }
+        if (action === "review-pending") { openPendingReview(); return; }
+        if (action === "leave-pending") { restorePendingBrowse(); return; }
+        if (action === "review-pending-issue") { reviewPendingIssue(); return; }
+        if (action === "save-all-pending") { saveAllPending(); return; }
         if (["review-changes", "review-editor-drafts", "undo-delete-group"].includes(action)) state.summaryPanel = "";
         if (action === "new-group") { beginNewGroup(); return; }
         if (action === "edit-mini") { beginEditor(); return; }
@@ -2502,6 +2910,7 @@
         }
 
         if (action === "clear-filters") {
+          if (state.collectionView === "pending") { restorePendingBrowse(); return; }
           if (state.previousBrowse) { restorePreviousBrowse(); return; }
           state.search = "";
           state.locationFilter = "all";
@@ -2573,6 +2982,7 @@
     }
 
     function handleRootInput(event) {
+      if (handleSaveInput(event.target) || event.target.disabled) return;
       if (updateEditorInput(event.target)) return;
       if (event.target === searchInputNode) {
         state.search = searchInputNode.value;
@@ -2589,6 +2999,7 @@
     }
 
     function handleRootChange(event) {
+      if (handleSaveInput(event.target) || event.target.disabled) return;
       if (updateEditorInput(event.target)) return;
       if (event.target instanceof HTMLSelectElement && event.target.hasAttribute("data-filter-set")) {
         state.filtersApplied.set = event.target.value;
@@ -2597,6 +3008,7 @@
       }
       const copySelect = event.target.closest("select[data-copy-id]");
       if (copySelect) {
+        state.pendingSaved = false;
         const group = getSelectedGroup();
         if (!group) return;
         const copy = editorBaseCopies(group).find(item => item.id === copySelect.getAttribute("data-copy-id"));
@@ -2849,8 +3261,8 @@
       state.locationMenuSearch = "";
       if (mode === "individuals" && state.selectedRootId) {
         const candidates = getBrowseRows().filter(row => row.group.rootId === state.selectedRootId);
-        const selected = candidates.find(row => row.copy.id === state.selectedCopyId) || candidates[0];
-        state.selectedCopyId = selected ? selected.copy.id : "";
+        const selected = candidates.find(row => row.copy?.id === state.selectedCopyId) || candidates[0];
+        state.selectedCopyId = selected?.copy?.id || "";
       }
       renderAllPreservingScroll(scroll, { keepSelection: true, keepDetail: true });
       if (mode === "individuals" && state.selectedCopyId) revealBrowseCopy(state.selectedCopyId, true);
@@ -3004,8 +3416,9 @@
       const search = state.search.trim().toLowerCase();
       const filterState = filterStateOverride || state.filtersApplied;
 
-      const filteredGroups = state.groups.filter(group => {
-        if (!group.copies.some(matchesCollectionView)) return false;
+      const groups = state.collectionView === "pending" ? pendingEntries().map(pendingGroup) : state.groups;
+      const filteredGroups = groups.filter(group => {
+        if (state.collectionView !== "pending" && !group.copies.some(matchesCollectionView)) return false;
         if (search && !group.searchText.includes(search)) return false;
 
         if (state.locationFilter !== "all") {
@@ -3044,7 +3457,12 @@
       if (state.browseMode === "groups") return getFilteredGroups().map(group => ({ group, copy: null }));
       const search = state.search.trim().toLowerCase();
       const rows = [];
-      state.groups.forEach(group => {
+      const groups = state.collectionView === "pending" ? pendingEntries().map(pendingGroup) : state.groups;
+      groups.forEach(group => {
+        if (state.collectionView === "pending" && !group.copies.length && matchesStructuredFilters(group, state.filtersApplied)
+          && (!search || group.searchText.includes(search)) && (state.locationFilter === "all" || group.home === state.locationFilter)) {
+          rows.push({ group, copy: null, copyOrder: 0 });
+        }
         group.copies.forEach((copy, copyOrder) => {
           if (!matchesCollectionView(copy)) return;
           if (!matchesStructuredFilters(group, state.filtersApplied, copy)) return;
@@ -3065,11 +3483,11 @@
         let comparison;
         if (key === "sticker") {
           // Unassigned copies stay last in either direction; sticker text is not identity.
-          const missingDifference = Number(!left.copy.sticker) - Number(!right.copy.sticker);
+          const missingDifference = Number(!left.copy?.sticker) - Number(!right.copy?.sticker);
           if (missingDifference) return missingDifference;
-          comparison = compareText(left.copy.sticker, right.copy.sticker);
+          comparison = compareText(left.copy?.sticker, right.copy?.sticker);
         } else if (key === "currentLocation") {
-          comparison = compareText(left.copy.currentLocation, right.copy.currentLocation);
+          comparison = compareText(left.copy?.currentLocation, right.copy?.currentLocation);
         } else {
           comparison = compareGroupsBySortKey(left.group, right.group, key);
         }
@@ -3195,7 +3613,7 @@
     }
 
     function ensureSelectionVisibility(rows) {
-      if (!state.selectedRootId || state.editor) return;
+      if (!state.selectedRootId || state.editor || state.collectionView === "pending") return;
       const selectedStillVisible = rows.some(row => row.group.rootId === state.selectedRootId
         && (!row.copy || !state.selectedCopyId || row.copy.id === state.selectedCopyId));
       if (!selectedStillVisible) {
@@ -3225,6 +3643,7 @@
     function resetSelectedDraftChanges() {
       const group = getSelectedGroup();
       if (!group) return;
+      state.pendingSaved = false;
       group.copies.forEach(copy => {
         delete state.draftLocations[copy.id];
       });
@@ -3233,6 +3652,7 @@
     function stageSelectedCopiesHome() {
       const group = getSelectedGroup();
       if (!group) return;
+      state.pendingSaved = false;
       group.copies.forEach(copy => {
         if (copy.currentLocation !== copy.home) {
           state.draftLocations[copy.id] = copy.home;
@@ -3244,23 +3664,9 @@
 
     function saveSelectedDraftChanges() {
       const group = getSelectedGroup();
-      if (!group) return;
-
-      state.groups = state.groups.map(existingGroup => {
-        if (existingGroup.rootId !== group.rootId) return existingGroup;
-
-        const updatedCopies = existingGroup.copies.map(copy => {
-          const nextLocation = state.draftLocations[copy.id];
-          if (!nextLocation) return copy;
-          return { ...copy, currentLocation: nextLocation };
-        });
-
-        return enrichGroup({ ...existingGroup, copies: updatedCopies });
-      });
-
-      group.copies.forEach(copy => {
-        delete state.draftLocations[copy.id];
-      });
+      if (!group || saveJob || !group.copies.some(isDirty)) return;
+      const updated = pendingGroup({ group, editor: null });
+      startSave([groupSaveTarget(group, updated)], { action: "save-changes", apply: records => applyMiniSave(records, [{ group }]) });
     }
 
     function getRecordCompleteness(group, copy = null) {

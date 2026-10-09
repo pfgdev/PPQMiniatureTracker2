@@ -9,6 +9,420 @@ but their proposed layouts and step numbers sometimes conflict with the accepted
 
 ## Current Direction: Imported Preview, No App Writes
 
+**October 8 persistence preparation:** checkpoint `9daab31` (`Add list management
+and record completeness workflows`) was committed and pushed. The owner agreed
+to start a controlled saving phase. This first slice is an offline rehearsal,
+not permission to migrate a workbook or enable writes. The running app and its
+preview behavior are unchanged.
+
+**October 9 owner decision: temporary drafts.** Do not add automatic draft
+storage in localStorage, sessionStorage, or the spreadsheet. Closing the sidebar
+or moving between groups keeps drafts in the current page, as already designed;
+Discard removes the editor draft. A fresh reload or leaving/closing the app may
+lose unfinished work. Keep the unsaved-changes warning for those exit attempts
+instead of introducing draft recovery or silently saving collection changes.
+The existing handler covers active/parked miniature drafts, pending copy
+locations, and changed list forms. When the live writer is connected, keep
+submitted work pending until acknowledgment so an in-flight/failed save is not
+prematurely treated as clean. Browser warnings are best effort, not crash or
+forced-close protection; see the
+[beforeunload limitations](https://developer.mozilla.org/en-US/docs/Web/API/Window/beforeunload_event#usage_notes).
+This decision does not authorize deletion of saved records or rollback of a
+request that has already reached the server.
+
+**October 9 approved direction: pending review and Save All.** The owner approved
+a temporary review view using the existing browse table, inspector, and Review
+Changes popover. This supersedes the earlier recommendation to leave cross-group
+saving out of the first live version. The following implementation is now in the
+browser-only preview. The offline save model now supports batches as described
+below, but is not connected to this UI.
+
+- Use **Show pending changes**, not an ordinary additive filter checkbox. Entry
+  switches to Groups and temporarily sets aside ordinary search/facet/location
+  filters so pending work cannot be hidden by the prior browse context.
+- Preserve the return context: browse mode, search, filters, sort, selection,
+  scroll, and any active Away/Missing Stickers view. Back must return to that
+  immediate context, including its own route back to normal browsing. A separate
+  `pendingReturn` snapshot preserves that nested return path.
+- Change the existing browse heading to **Pending Changes**, shortened to
+  **Pending** when constrained. The existing Clear button becomes **Back** in
+  this view. Do not add a permanent toolbar row, grow the header, or require
+  reopening a popover to exit. The popover also offers Back to previous view.
+- Search and facets may narrow the pending view without changing the stored
+  return context. **Show all pending** resets this temporary narrowing without
+  exiting review. Back instead exits and restores the earlier browse setup.
+- Display affected existing groups and new-group drafts, including incomplete
+  or zero-copy drafts that cannot yet be saved. Count unique groups, not separate
+  overlapping editor/location drafts. The ordinary sidebar remains the place to
+  inspect, correct, or discard work; leaving review never discards it.
+- Keep **Save All Changes** inside the existing Review Changes popover, alongside
+  an explicit scope such as `3 groups total / 1 shown`. Save All includes all
+  pending miniature work in this page, regardless of further browse filtering:
+  active/parked editor drafts, new groups, and pending copy locations. It must
+  never silently switch to saving only visible results. A future visible-only
+  action would need the distinct label Save Shown Changes.
+- Unfinished list forms are excluded: their Add/Save/Remove actions remain
+  independent. Confirmed group deletion and restoration remain explicit actions,
+  not changes silently bundled into this save queue. Per-group Save/Create and
+  location-only Save remain available alongside Save All.
+- Validate the whole batch before applying anything. If any group needs
+  attention, show the affected-group count and a Review action, disable Save All,
+  and retain every draft. A valid individual group can still be saved separately.
+  Do not silently skip invalid groups or partially save the batch.
+- Saving one group removes it from pending results while keeping its inspector
+  open. Saving the last group leaves an **All changes saved** empty state and
+  Back, rather than unexpectedly changing the user's view. Distinguish that from
+  no pending results matching a temporary filter. Restoring an earlier browse
+  context restores controls, not old data or records that have since been deleted.
+
+**October 9 preview implementation:** Show pending changes and Save All Changes
+now live in Review Changes. The pending table projects draft values, marks new
+groups, and keeps incomplete or zero-copy drafts discoverable. Search/facets
+operate on those proposed values; ordinary browsing still uses applied values.
+Save All normalizes each group's metadata/copies and pending locations, validates
+the final collection including sticker uniqueness, then applies the whole batch
+in memory. This permits a valid sticker swap across two groups without trying to
+save either conflicting intermediate state. An invalid group blocks the entire
+batch and Review opens its editor at the problem field. Blank and explicit n/a
+stickers remain permitted, following existing authoring rules.
+
+Existing Pending locations / Resume drafts shortcuts remain available outside
+the pending view; inside it, Show all pending and Back handle review navigation.
+Visual follow-up: Review Changes actions now have visible button borders, with a
+bold pale-blue review action and forward arrow. Pending Changes also has a square
+back-arrow button beside its title, aligned at the same 30px height as the view
+toggle and New. The original Back button remains. Four focused browser checks
+passed, including unchanged header heights, matching control edges, keyboard
+Back, nested returns, and layouts from 320px to 1440px; saving logic is unchanged.
+Individual saves remain available. Saved groups disappear from pending results
+but keep their inspector, and the final save leaves All changes saved plus Back.
+Return snapshots restore controls/scroll, not old data or deleted selections;
+list renames update the stored return filters as well as the current filters.
+
+The owner accepted the preview and asked to proceed after one final polish:
+Review Changes now shows a single No pending edits status when empty, without
+the redundant zero-count sentence, success log, or preview footer. The page-level
+preview notice remains. No spreadsheet write endpoint, migration, draft
+persistence, Git push, or clasp upload was added or performed for these UI slices.
+
+Verification for the UI slice: the full 99-scenario browser run passed. A final
+draft-copy selection fix added a 100th scenario; all 10 pending-review scenarios
+plus the affected collection-return and list-rename scenarios passed on rerun.
+All 16 imported-data browser checks passed on the final source, including a
+two-group batch with preserved legacy blanks and checked-out locations. All 141
+unit/import/persistence checks passed. No browser script errors; screenshots
+checked at desktop/phone widths and with the imported 612-copy collection.
+`git diff --check` passed. Evidence stays in ignored `.local` paths.
+
+Related saving discussion: stale browsing is acceptable; do not force live
+refreshes. The offline model can now check affected groups/list choices instead
+of rejecting a save solely because an unrelated record changed. Its safe default
+blocks same-record conflicts and returns their IDs while preserving inputs.
+The eventual latest-data review UI still needs design; explicit overwrite has
+not been authorized. Physical writes should target affected records plus revision
+and receipt metadata, not blindly replace the collection from browser state.
+
+**October 9 offline batch contract implemented:** `saveBatch` accepts
+`payload.changes`, an array of `{ clientKey, kind, payload }` items. Each item is
+either `saveGroup` (complete intended group and retained copies) or
+`saveLocations` (location-only changes). Each existing group occurs once: merge
+editor and staged location edits before submitting, as the preview already does.
+New groups use an empty rootId plus a unique clientKey, with server-generated
+UUIDs mapped back in the result. Copy client keys are scoped to their group.
+List changes, group Delete/Restore, and nested batches are not allowed in Save
+All; they keep their independent explicit actions.
+
+- Prepare every item against a clone, then validate the whole final collection.
+  A failure returns no candidate, changes no input, and commits no receipt or
+  deletion history. Sticker exchanges and releasing/reassigning a removed copy's
+  sticker work regardless of operation order. Unchanged legacy blanks remain
+  valid; new records still require their fields and a copy.
+- A batch advances the collection revision once and creates one logical receipt,
+  with `result.changes` carrying each clientKey, rootId, and created-copy mapping.
+  The exact request ID/payload is retried after an uncertain response. Receipt
+  lookup precedes conflict checking: a committed retry returns its original IDs
+  without reverting intervening edits, even after a created group was deleted.
+- Optional request `preconditions` contain `groups` and `choices` arrays of
+  `{ id, token }`. Tokens are SHA-256 fingerprints of the original loaded record.
+  Group tokens include all its copies and deletion/sequence history, but not
+  referenced choice labels; a list rename must not invalidate unrelated group
+  work. Capture baselines when loading the draft, never by rereading at Save time.
+  `persistencePreconditions_` is the service-free helper for the offline tests;
+  the future read adapter must expose original baselines to the client.
+- Preconditions must cover exactly the affected existing records, including a
+  removed choice restored through Add. They apply to single operations too.
+  A mismatch returns STALE with affected IDs; unaffected newer records are kept.
+  New assignments still validate against the current catalogs/stickers. Without
+  preconditions, the older collection-wide revision guard remains conservative.
+- The offline candidate schema is now version 2. Requests adds a `part` column:
+  large result JSON is split into numbered pieces of at most 40,000 characters,
+  without splitting a surrogate pair. These are storage pieces of one receipt,
+  not independent commits. Reordered parts are reassembled; gaps, duplicates,
+  inconsistent fingerprints, or malformed results are rejected. Preparation also
+  checks serializability before returning a candidate. The current preview
+  workbook/schema has not changed, and neither offline schema should be pasted
+  into it or uploaded through clasp.
+
+Verification for this slice: 109 persistence tests and 74 import/storage checks
+passed (183 total), including a local 496-group batch over the existing ignored
+import readback and a 350-new-group multipart receipt. Three focused browser
+scenarios passed for the menu cleanup, save completion, keyboard navigation,
+and narrow layouts. No full browser rerun was needed for the disconnected model.
+No live service, lock, physical write, backup, or deployment was exercised.
+
+`Persistence.js` contains a private, service-free save domain model. It is
+intentionally excluded by the existing clasp allowlist, is not called by Code.js
+or Scripts.html, and exposes no callable write endpoint. Node tests supply time,
+UUID generation, and SHA-256 hashing; future Apps Script wrappers must provide
+the server equivalents. No client-supplied identity generator is trusted.
+
+Implemented and locally tested:
+
+- A candidate versioned schema with stable UUIDs for list choices and newly
+  created groups/copies. Imported group/copy IDs are unchanged. Group-level
+  characteristics, Home, Paint, and Set refer to choices by ID; copy Current
+  Location refers to the same location catalog, with separate Home eligibility.
+  Names/notes remain literal text. Same-name group variants remain valid.
+- Migration from the validated imported preview, plus strict header-mapped
+  serialization/parsing and an active-record projection back to existing display
+  values. Blank source values, n/a, Not specified, alphanumeric Set numbers,
+  current locations, and individual notes are preserved. Existing UI-provided
+  Not specified choices become explicit list rows; Paint does not gain one.
+- Group Save/Create, location-only Save, group Delete/Restore, and list
+  Add/Rename/Remove/Restore prepare a separate candidate state. Validation errors
+  leave both the prior state and request untouched. Existing missing details do
+  not block unrelated repairs; new groups require their explicit choices and
+  at least one copy. Empty and n/a stickers are distinct and permitted. Other
+  assigned stickers must belong to the stored sticker catalog and be unique
+  among active copies, ignoring case/outer whitespace.
+- Soft deletion retains records and IDs. Deleted records release stickers.
+  Restore validates reuse rather than stealing an assignment. A group deletion
+  marks only its currently active copies, so restoring cannot resurrect a copy
+  removed earlier. New copy sequence numbers are higher than deleted numbers.
+  Discard/Close submits no command and creates no historical deletion record.
+- Each request includes collection ID, a request ID, and expected collection
+  revision. Requests without record preconditions reject a stale revision;
+  record-scoped requests check their original group/choice snapshots instead.
+  Successful candidates include a receipt in the same state: retrying the same
+  request returns its original result without allocating another ID; reusing its
+  request ID for different content rejects. An older successful retry does not
+  replace later state. These are pure-model checks, not yet a live concurrency
+  guarantee: the adapter still needs locking and an atomic commit.
+- Removed catalog values retain their references but cannot be newly assigned.
+  Renaming does not rewrite group/copy rows. Re-adding a removed label restores
+  its ID. Restoring a choice does not roll back any intervening assignments.
+
+The version-2 candidate tables are Groups, Copies, Lists, Stickers, Metadata, and Requests.
+The first three gain reference IDs/deletion metadata. Metadata holds schema
+version, collection identity, and revision; Requests holds request fingerprints
+and numbered result-receipt pieces, not unsaved drafts. This candidate is **not compatible with
+the current preview reader**. Do not paste these tables into 2.0 or use the old
+first-import command as a migration. Candidate cells are strings; the future
+writer must use explicit literal values, not formula-interpreting input.
+
+Earlier offline-model verification: 67 new persistence scenarios and all 74 existing unit/import
+checks passed (141 total). The optional real-data check used the existing ignored
+local import readback, not a new live capture: all 612 copies, 496 groups, 19 away
+locations, and six incomplete fields survived migration and table round trips.
+Checks cover stale saves, lost responses/retries, failure before commit, deletion
+and sticker reuse, retired references, reserved choice labels, malformed input,
+formula-looking literal text, and reordered headers. No UI source changed in
+that isolated slice, so its browser suite was not rerun then. Hosted authorization,
+network failures, quotas, backups/restoration, and physical writes are not yet
+tested. No Git push, clasp upload, remote backup, or sheet migration was performed
+for this new slice.
+
+### October 9: Disabled Transport Adapter
+
+The pending-review button treatment is owner-accepted; no additional UI test is
+needed for this backend-only slice. `PersistenceAdapter.js` now implements the
+private save transport against injected services. It is excluded from clasp,
+not called by Code.js/Storage.js/the UI, and defaults to disabled with blank
+destination, collection and owner configuration. No manifest/service/deployment
+change, remote read/write, migration, backup or Git/clasp push was performed.
+
+- Check write enable, server-owned configuration and active caller identity
+  before any lock/read. Never accept a workbook or identity from the client.
+  Blank/unavailable identity fails closed; effective script-owner identity is
+  not caller authorization.
+- Acquire a script lock; bulk read the six candidate-schema tabs under it.
+  Validate literal text cells, exact header names, collection/schema, references
+  and receipts. Reordered columns/records and interior blank rows work; formulas,
+  typed numbers, extra data columns, merged cells or partial grids fail closed.
+- Prepare against that current state, including original record-token checks.
+  Resolve physical cells by headers and IDs, not array order. Patch only changed
+  cell runs; append new records after existing data. Expand row capacity within
+  the same batch when necessary. No row deletion, table rewrite or formatting
+  change is part of saving.
+- Commit record patches, revision and all receipt parts in ONE Sheets batch.
+  Store formula-looking text as literal strings. Replaying a committed request
+  returns its original IDs/result without another write, even after later saves.
+- Any commit exception or absent acknowledgment is `SAVE_UNCERTAIN`, not evidence
+  that nothing was saved. Retain the exact request ID/payload for Retry. Failed
+  reads and lock contention do not attempt writes. Release the acquired lock in
+  finally; an execution-end release fallback must not turn a confirmed commit
+  into a reported failure.
+
+All 222 import/storage/domain/adapter checks passed, including 39 adapter checks.
+These exercise failed commits, lost acknowledgments, concurrent/repeated saves,
+schema rejection, row/column reorder, literal cells, grid expansion, a 350-new-
+group multi-piece receipt, and a simulated 496-group save using the imported
+snapshot. The latter preserved all 612 copies, blanks, choice identities and
+19 away locations, then recovered a lost response without another write.
+
+The Sheets/Session/Lock bridge is tested with fakes only. Real authorization,
+Advanced Sheets service configuration, payload/timeout/quota behavior, direct
+spreadsheet-editor races and backup recovery remain untested. Never infer live
+safety from these local checks. Receipt history still has no purge/archival
+policy; growing storage/read costs need measurement before choosing one.
+
+For the next UI slice, use a simulated transport first. A future public RPC must
+return a structured success/error envelope preserving error codes and affected
+record IDs; Apps Script failure callbacks must not be assumed to serialize custom
+Error properties. A candidate-schema load path must provide stable catalog IDs,
+revision and original record tokens. The current deployed label-based preview
+reader is not that path. Keep exact in-flight requests separate from editable
+drafts, and do not infer new baseline tokens from freshly read records when
+resubmitting a stale edit.
+
+The adapter uses the Sheets
+[grid-data field mask](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get)
+to inspect literal values instead of trusting displayed strings. The
+[active-user identity limitations](https://developers.google.com/apps-script/reference/base/session#getActiveUser())
+are why a blank identity is rejected and owner-only deployment must still be
+verified before activation.
+
+### October 9: Simulated Save UI
+
+Implemented the next approved slice without connecting a real writer:
+
+- `SaveFlow.html` supplies an independent, browser-memory simulated collection
+  and retry receipts. All explicit miniature/list/delete/restore actions now
+  pass through asynchronous acknowledgment instead of mutating applied UI state
+  immediately. Save All is one request for the whole pending set, not the current
+  filtered subset. No UI redesign, autosave, local draft backup, server endpoint
+  or Google service activation is included.
+- Keep an immutable submitted snapshot separate from mutable unrelated drafts.
+  Only one unresolved request can commit at a time. Lock the submitted controls
+  and destructive draft actions while letting the user browse, Close, navigate
+  list categories and edit unrelated drafts. Completion only clears the submitted
+  targets and never reopens an inspector that the user closed.
+- Show Saving in existing buttons, then Retry or an inline conflict decision.
+  Error details sit inline in the inspector, list form, and Review Changes menu
+  so a closed sidebar does not strand a failed request. Avoid a persistent success
+  log or extra idle-state text. The existing unload warning also covers in-flight
+  and unresolved list/delete saves.
+- Failures before commit allow Keep Editing, retaining the draft. An exception, malformed
+  acknowledgment, timeout or lost reply is uncertain: retain the exact request
+  for Retry and do not permit abandoning it as though it definitely failed.
+  Receipt replay applies the confirmed result once. A 15-second client timeout
+  does not cancel a possible commit; a late reply cannot silently clear a draft.
+- A stale response asks **Save Anyway** or **Discard My Changes**, without a
+  comparison step or per-field version chooser. Save Anyway applies local edits
+  over conflicting saved values while preserving unrelated newer fields, using
+  a fresh request and the observed saved baseline. Another intervening change
+  requires confirmation again. Discard loads the saved entry and clears its
+  draft without saving, advancing the sticker sequence, or creating deletion
+  history. In Save All, Discard explicitly names and affects only stale entries;
+  other pending groups and unrelated list/miniature drafts survive. Deleting a
+  group uses **Delete Anyway** rather than disguising deletion as saving.
+  No automatic overwrite, automatic resubmit or forced reload is used.
+- The Preview/Demo disclosure contains a collapsed Try save feedback control.
+  Outcomes are one-shot (Normal, Connection problem, Lost confirmation, Changed
+  in another tab); real records and reload behavior are never changed. This is
+  the owner's feedback surface for these otherwise hard-to-trigger states.
+  Repeated conflict simulations alternate a single name suffix rather than
+  accumulating `(other tab)` labels; legitimate parentheses are untouched.
+
+Important remaining boundary: this simulator uses the current label-based UI
+records and mock identities, not the candidate persistence schema. Its structured
+response shape and coordinator establish the UX, but the server adapter is still
+private, disabled, excluded from clasp and uncalled. The next integration work
+must deliberately map group/copy/catalog IDs, retain original server tokens,
+load refreshed candidate-schema baselines, and serialize a tested public RPC
+envelope. Do not substitute simulator tokens for server conflict checks or call
+this live saving. Durable deleted-record recovery and preferred sticker sequence
+handling remain separate gates below.
+
+Conflict-clarity follow-up: 237 unit checks, 19 save-flow browser checks, and
+16 imported-data preview checks passed. Desktop/mobile conflict notices were
+visually checked. Added coverage for overwrite and explicit discard, location
+restoration, Save All discard scope, list/miniature draft isolation, deletion
+history protection, and non-accumulating simulation names. The full 100-scenario
+browser suite was not rerun for this focused follow-up.
+
+Initial save-flow verification: 235 local unit checks passed; all 100 existing browser regression
+scenarios passed across the full run and targeted continuations, plus 16 imported-
+data preview checks and 14 new save-flow browser checks. New coverage includes
+timeout/malformed acknowledgment, lost-response creation retry, cross-group Save
+All failure, parked unrelated drafts, list/deletion failures, overlap/non-overlap
+review and a third edit arriving during review. Desktop/mobile screenshots were
+inspected, and `git diff --check` passed. Old synchronous test helpers now wait
+for a settled save rather than reading state before acknowledgment. The preview
+retains its existing tolerance for untouched legacy duplicate stickers during
+metadata repair; the stricter imported/candidate storage validation is unchanged.
+No Git/clasp push, Google write, migration or deployment was performed.
+
+### Saving Phase: Remaining Gates
+
+1. **Pending-review preview accepted.** The temporary view, nested return context,
+   global save scope, invalid-draft review, and browser-only batch application are
+   implemented and owner-tested. Keep per-group saves, draft-retention boundaries,
+   and fixed-height layout when connecting the real transport.
+2. **Offline batch contract implemented.** Final-state validation, one logical
+   receipt, retry mappings, affected-record conflict checks, and unchanged-input
+   failure tests are complete. The same-record review UI remains a later gate;
+   the model currently blocks conflicts rather than allowing overwrite.
+3. **Disabled transport adapter implemented locally.** Server-owned destination
+   and caller guards, locking, bulk reread, targeted atomic commit and retry
+   behavior are tested using fakes (see above). Default configuration is disabled
+   and empty. Real service authorization and migration remain later gates, not
+   implicit permission to enable this adapter.
+4. **Simulated save UI implemented; real contract bridge remains.** Keep the submitted draft
+   until acknowledgment; show Saving in the existing action space, prevent
+   repeated submissions, and show failures inline with Retry. An uncertain
+   response retries the exact request ID/payload. A stale draft needs an explicit
+   latest-data review, not a forced page reload or silent overwrite. Keep parked
+   drafts, pending locations, list forms, and navigation separate. A list change
+   commits independently from miniature Save/Discard, as already designed.
+   Per the October 9 decision, drafts remain memory-only: preserve exit warnings,
+   but do not build reload recovery or automatic draft persistence.
+   The browser now rehearses these states (see above). Next, bridge the UI's
+   labels/temporary IDs to candidate-schema IDs and original server baselines
+   under local tests. Do not activate a reachable writer as part of that bridge.
+5. **Complete the reload experience.** Rebuild catalogs from stored IDs and
+   retirement metadata, derive the next sticker from the ordered catalog minus
+   active assignments, and decide how the existing preferred sequence cursor
+   persists. Add the previously accepted Show removed/Restore path for choices
+   and a minimal durable group/copy recovery path. Do not silently expire deleted
+   records or receipts. Receipt archival/purge needs its own deliberate design.
+6. **Verify access and prepare a disposable test destination.** The local manifest
+   still says USER_DEPLOYING / ANYONE_ANONYMOUS; this does not prove the live
+   deployment configuration. Before adding a reachable writer, confirm a
+   single-owner deployment or implement tested authenticated caller checks.
+   Recommend owner-only initially. Blank caller identity must fail closed; the
+   script owner's identity is not proof of the caller. Do not weaken access or
+   rely on the secrecy of a URL. No manifest/deployment setting changed here.
+7. **Rehearse backup, migration, and recovery before enabling 2.0 writes.** With
+   owner approval, make a fresh verified backup/capture and migrate a disposable
+   copy first. Verify exact records/IDs/locations/blanks, then test Save/reload,
+   two-tab conflicts, creation, deletion, restore, and list operations. Prove
+   restoration from the backup. Agree a backup cadence and rollback procedure.
+   Preserve the legacy workbook untouched; activation on 2.0 is a separate
+   explicit checkpoint, not an accidental consequence of clasp push.
+
+Implementation references: Google's
+[script lock documentation](https://developers.google.com/apps-script/reference/lock/lock-service)
+supports serializing executions of this script; it does not lock out direct
+spreadsheet edits or another script project. The Sheets API's
+[batchUpdate contract](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate)
+applies a validated batch atomically, but is not an optimistic concurrency check
+against arbitrary outside editors. Storage tabs therefore need a controlled
+write path, plus protection/validation for out-of-band edits. Google's
+[web-app manifest reference](https://developers.google.com/apps-script/manifest/web-app-api-executable)
+defines MYSELF versus anonymous access. Deployment/access verification remains
+a go-live gate, not something inferred from a successful local test.
+
 **October 8 follow-up: Manage Lists prototype.** The owner approved a restrained
 in-app dialog, consistent with the existing UI. A compact Lists button sits beside
 Dashboard (inside Collection at narrow widths). Following owner feedback, both

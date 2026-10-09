@@ -1,0 +1,144 @@
+<script>
+  // Browser-only transport rehearsal. No Google calls or persistent browser storage.
+  const MiniSaveFlow = (() => {
+    const clone = value => JSON.parse(JSON.stringify(value));
+    const canonical = value => value && typeof value === "object"
+      ? Array.isArray(value) ? `[${value.map(canonical)}]`
+        : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
+      : JSON.stringify(value);
+    const equal = (a, b) => canonical(a) === canonical(b);
+    const keyOf = target => JSON.stringify([target.table, target.id]);
+
+    function merge(base, mine, latest, choices = {}, path = []) {
+      if (equal(mine, base)) return { value: latest, conflicts: [] };
+      if (equal(latest, base) || equal(mine, latest)) return { value: mine, conflicts: [] };
+      if ([base, mine, latest].every(value => value && typeof value === "object" && !Array.isArray(value))) {
+        const value = {}, conflicts = [];
+        for (const key of new Set([...Object.keys(base), ...Object.keys(mine), ...Object.keys(latest)])) {
+          const part = merge(base[key] ?? null, mine[key] ?? null, latest[key] ?? null, choices, path.concat(key));
+          if (part.value !== null) value[key] = part.value;
+          conflicts.push(...part.conflicts);
+        }
+        return { value, conflicts };
+      }
+      const choice = choices[JSON.stringify(path)];
+      return { value: choice === "mine" ? mine : latest,
+        conflicts: [{ path, mine, latest, resolved: choice === "mine" || choice === "latest" }] };
+    }
+
+    function createSimulator(initialRecords, { delay = 300 } = {}) {
+      let records = new Map(initialRecords.map(record => [keyOf(record), clone(record.value)]));
+      const receipts = new Map();
+      const simulatedNames = new Map();
+      let outcome = "success", revision = 0, sends = 0, commits = 0;
+      const get = target => clone(records.get(keyOf(target)) ?? null);
+      function put(next, target, before, value) {
+        next.set(keyOf(target), clone(value));
+        // Preview records use labels. The real adapter will use stable choice IDs instead.
+        if (target.table === "groups" || !before || !value || before.value === value.value) return;
+        const field = target.table.slice(6);
+        for (const [key, stored] of next) {
+          if (JSON.parse(key)[0] !== "groups" || !stored) continue;
+          const group = clone(stored), rename = object => {
+            for (const name of field === "locations" ? ["home", "currentLocation"] : [field]) {
+              if (object[name] === before.value) object[name] = value.value;
+            }
+          };
+          rename(group); Object.values(group.copies).forEach(rename); next.set(key, group);
+        }
+      }
+      function validate(next) {
+        const stickers = new Map(), previousAssignments = new Map(), choices = new Set();
+        for (const [key, value] of records) {
+          if (JSON.parse(key)[0] !== "groups" || !value) continue;
+          for (const copy of Object.values(value.copies)) {
+            const code = (copy.sticker || "").trim().toUpperCase();
+            if (!previousAssignments.has(code)) previousAssignments.set(code, new Set());
+            previousAssignments.get(code).add(JSON.stringify([value.rootId, copy.id]));
+          }
+        }
+        for (const [key, value] of next) {
+          if (!value) continue;
+          const [table] = JSON.parse(key);
+          if (table === "groups") {
+            if (!value.name?.trim() || !Object.keys(value.copies || {}).length) return "A group needs a name and at least one copy.";
+            const numbers = new Set();
+            for (const copy of Object.values(value.copies)) {
+              if (copy.miniNumber !== undefined) {
+                const number = Number(copy.miniNumber);
+                if (!Number.isSafeInteger(number) || number < 1 || numbers.has(number)) return "Copy numbering changed. Return to editing and review the new copies.";
+                numbers.add(number);
+              }
+              const sticker = (copy.sticker || "").trim().toUpperCase();
+              if (!sticker || sticker === "N/A") continue;
+              if (!stickers.has(sticker)) stickers.set(sticker, []);
+              stickers.get(sticker).push(JSON.stringify([value.rootId, copy.id]));
+            }
+          } else {
+            const name = `${table}:${value.value.trim().toLowerCase()}`;
+            if (choices.has(name)) return "That choice already exists. Review the list before saving.";
+            choices.add(name);
+          }
+        }
+        for (const [sticker, owners] of stickers) {
+          // Match the existing preview's ability to repair metadata without rewriting legacy stickers.
+          if (owners.length > 1 && owners.some(owner => !previousAssignments.get(sticker)?.has(owner))) {
+            return `Sticker ${sticker} is already assigned. Review the assignments before saving.`;
+          }
+        }
+        return "";
+      }
+      return {
+        setOutcome(value) { outcome = value; },
+        inspect() { return { sends, commits, revision, records: Array.from(records.entries()).map(([key, value]) => ({ key, value: clone(value) })) }; },
+        change(target, value) { put(records, target, get(target), value); revision++; },
+        async send(submitted) {
+          const request = clone(submitted), mode = outcome; outcome = "success"; sends++;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          const fingerprint = canonical(request), receipt = receipts.get(request.requestId);
+          if (receipt) return receipt.fingerprint === fingerprint ? { ok: true, result: clone(receipt.result), replayed: true }
+            : { ok: false, code: "REQUEST_REUSED", message: "This request changed. Your draft has been kept." };
+          if (mode === "failure") return { ok: false, code: "READ_FAILED", message: "Couldn't save. Your changes are still here." };
+          if (mode === "conflict") {
+            const target = request.targets.find(target => target.before);
+            if (target) {
+              const latest = get(target), field = target.table === "groups" ? "name" : "value";
+              if (latest) {
+                const key = keyOf(target);
+                if (!simulatedNames.has(key)) simulatedNames.set(key, latest[field]);
+                const base = simulatedNames.get(key);
+                latest[field] = latest[field] === `${base} - Updated` ? base : `${base} - Updated`;
+                put(records, target, get(target), latest); revision++;
+              }
+            }
+          }
+          const latest = request.targets.map(target => ({ table: target.table, id: target.id, value: get(target) }));
+          if (request.targets.some((target, index) => !equal(target.before, latest[index].value))) {
+            return { ok: false, code: "STALE", message: "This entry changed elsewhere. Your draft is safe.", latest };
+          }
+          const next = new Map(records);
+          request.targets.forEach(target => put(next, target, target.before, target.value));
+          const error = validate(next);
+          if (error) return { ok: false, code: "INVALID", message: error };
+          records = next; revision++; commits++;
+          const result = { revision, records: request.targets.map(target => ({ table: target.table, id: target.id, value: get(target) })) };
+          receipts.set(request.requestId, { fingerprint, result: clone(result) });
+          if (mode === "lost") return { ok: false, code: "SAVE_UNCERTAIN", message: "Save wasn't confirmed. Retry to check it safely; don't start a second save." };
+          return { ok: true, result, replayed: false };
+        }
+      };
+    }
+    function differences(before, after, path = []) {
+      if (equal(before, after)) return [];
+      if ([before, after].every(value => value && typeof value === "object" && !Array.isArray(value))) {
+        return [...new Set([...Object.keys(before), ...Object.keys(after)])].flatMap(key => differences(before[key] ?? null, after[key] ?? null, path.concat(key)));
+      }
+      return [{ path, before, after }];
+    }
+    function overwriteEdits(base, mine, latest) {
+      const choices = Object.fromEntries(merge(base, mine, latest).conflicts.map(({ path }) => [JSON.stringify(path), "mine"]));
+      return merge(base, mine, latest, choices).value;
+    }
+    return { clone, equal, merge, overwriteEdits, differences, createSimulator };
+  })();
+</script>
